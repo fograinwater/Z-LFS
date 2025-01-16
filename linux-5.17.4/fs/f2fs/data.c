@@ -338,10 +338,6 @@ static void f2fs_write_end_io(struct bio *bio)
 		bio->bi_status = BLK_STS_IOERR;
 	}
 
-#if 0 // META_FOR_ZNS
-	if(bio->bi_status)
-		printk("(%s %d) bio error(%d)", __func__, __LINE__, bio->bi_status);
-#endif
 	bio_for_each_segment_all(bvec, bio, iter_all) {
 		struct page *page = bvec->bv_page;
 		enum count_type type = WB_DATA_TYPE(page);
@@ -372,6 +368,7 @@ static void f2fs_write_end_io(struct bio *bio)
 
 		f2fs_bug_on(sbi, page->mapping == NODE_MAPPING(sbi) &&
 					page->index != nid_of_node(page));
+
 #if DELAYED_MERGE
     type = __is_merged_meta(page)? F2FS_MERGE_META : type;
 #endif
@@ -395,9 +392,6 @@ static void f2fs_write_end_io(struct bio *bio)
     }
 #endif
 #endif
-//  printk("(%llu) %u", bio_end_sector(bio), sbi->segs_per_sec * sbi->blocks_per_seg);
-//
-//
 	bio_put(bio);
 }
 
@@ -422,6 +416,18 @@ struct block_device *f2fs_target_device(struct f2fs_sb_info *sbi,
 		bio->bi_iter.bi_sector = SECTOR_FROM_BLOCK(blk_addr);
 	}
 	return bdev;
+}
+
+int f2fs_get_first_zns_index(struct f2fs_sb_info *sbi) {
+  int i;
+	if (!f2fs_is_multi_device(sbi))
+		return 0;
+
+	for (i = 0; i < sbi->s_ndevs; i++)
+  	if (bdev_is_zoned(FDEV(i).bdev))
+			return i;
+	return 0;
+  
 }
 
 int f2fs_target_device_index(struct f2fs_sb_info *sbi, block_t blkaddr)
@@ -637,20 +643,8 @@ static void __f2fs_submit_merged_write(struct f2fs_sb_info *sbi,
 {
 	enum page_type btype = PAGE_TYPE_OF_BIO(type);
 	struct f2fs_bio_info *io = sbi->write_io[btype] + temp;
-#if 0
-	unsigned long long bio_size = 0;
-	struct bio *cur;
-#endif
 	down_write(&io->io_rwsem);
 
-#if 0
-	cur = io->bio;
-//	while(!cur){
-	if(cur){
-		bio_size += bio_sectors(cur);
-		printk("(%s:%d) bi_size(%u) : %llu", __func__, __LINE__, btype, bio_size);
-	}
-#endif
 	/* change META to META_FLUSH in the checkpoint procedure */
 	if (type >= META_FLUSH) {
 		io->fio.type = META_FLUSH;
@@ -687,6 +681,20 @@ static void __submit_merged_write_cond(struct f2fs_sb_info *sbi,
 			break;
 	}
 }
+
+#if SEP_SSA
+void f2fs_submit_merged_write_of_type(struct f2fs_sb_info *sbi,
+  unsigned short seg_type){
+  enum page_type type;
+  enum temp_type temp;
+
+  type = IS_DATASEG(seg_type)? DATA : NODE;
+  temp = IS_HOT(seg_type)? HOT : (IS_WARM(seg_type)? WARM : COLD);
+  
+  __f2fs_submit_merged_write(sbi, type, temp);
+
+}
+#endif
 
 void f2fs_submit_merged_write(struct f2fs_sb_info *sbi, enum page_type type)
 {
@@ -976,15 +984,23 @@ alloc_new:
 void f2fs_submit_page_write(struct f2fs_io_info *fio)
 {
 	struct f2fs_sb_info *sbi = fio->sbi;
-	enum page_type btype = PAGE_TYPE_OF_BIO(fio->type);
-	struct f2fs_bio_info *io = sbi->write_io[btype] + fio->temp;
+	enum page_type btype;
+	struct f2fs_bio_info *io;
 	struct page *bio_page;
 	int tmp;
+  bool sep_ssa = false; 
+ 
 #if DELAYED_MERGE
   int type;
 #endif
+#if SEP_SSA
+  if (fio->io_type == FS_SEP_SSA_IO) {
+    sep_ssa = true;
+  }
+#endif
+  btype = PAGE_TYPE_OF_BIO(fio->type);
+	io = sbi->write_io[btype] + fio->temp;
 
-	
 	f2fs_bug_on(sbi, is_read_io(fio->op));
 
 	down_write(&io->io_rwsem);
@@ -1000,8 +1016,9 @@ next:
 		list_del(&fio->list);
 		spin_unlock(&io->io_lock);
 	}
-
-	verify_fio_blkaddr(fio);
+  if(!sep_ssa) {
+  	verify_fio_blkaddr(fio);
+  }
 
 	if (fio->encrypted_page)
 		bio_page = fio->encrypted_page;
@@ -1056,8 +1073,11 @@ skip:
 		goto next;
 out:
 	if (is_sbi_flag_set(sbi, SBI_IS_SHUTDOWN) ||
-				!f2fs_is_checkpoint_ready(sbi))
+				!f2fs_is_checkpoint_ready(sbi)) {
 		__submit_merged_bio(io);
+  } else if (sep_ssa) {
+    __submit_merged_bio(io);
+  }
 	up_write(&io->io_rwsem);
 }
 

@@ -44,7 +44,12 @@ struct f2fs_checkpoint *cp;
 
 /* Return first segment number of each area */
 #define prev_zone(cur)		(c.cur_seg[cur] - c.segs_per_zone)
+
+#if SEP_SSA
+#define next_zone(cur)		(c.cur_seg[cur] + (c.segs_per_zone * c.blks_per_seg / (c.blks_per_seg+1)))
+#else
 #define next_zone(cur)		(c.cur_seg[cur] + c.segs_per_zone)
+#endif
 #define last_zone(cur)		((cur - 1) * c.segs_per_zone)
 #define last_section(cur)	(cur + (c.secs_per_zone - 1) * c.segs_per_sec)
 
@@ -709,6 +714,7 @@ static int f2fs_prepare_super_block(void)
 
 	set_sb(section_count, total_zones * c.secs_per_zone);
 	set_sb(segment_count_main, get_sb(section_count) * c.segs_per_sec);
+
   
 	/*
 	 * Let's determine the best reserved and overprovisioned space.
@@ -814,7 +820,17 @@ static int f2fs_prepare_super_block(void)
 				max(last_zone((total_zones >> 1)),
 					next_zone(CURSEG_COLD_DATA));
 	}
-
+#if SEP_SSA
+	printf("(%s : %d) segno: %u %u %u %u %u %u\n"
+			, __func__, __LINE__, 
+        c.cur_seg[CURSEG_HOT_NODE],
+        c.cur_seg[CURSEG_WARM_NODE],
+        c.cur_seg[CURSEG_COLD_NODE],
+        c.cur_seg[CURSEG_HOT_DATA],
+        c.cur_seg[CURSEG_WARM_DATA],
+        c.cur_seg[CURSEG_COLD_DATA]
+    );
+#endif
 	/* if there is redundancy, reassign it */
 	if (!(c.feature & cpu_to_le32(F2FS_FEATURE_RO)))
 		verify_cur_segs();
@@ -1796,9 +1812,13 @@ static int f2fs_write_root_inode(void)
 		raw_node->i.i_log_cluster_size = 0;
 		raw_node->i.i_padding = 0;
 	}
-
-	data_blk_nor = get_sb(main_blkaddr) +
-		c.cur_seg[CURSEG_HOT_DATA] * c.blks_per_seg;
+	data_blk_nor = get_sb(main_blkaddr);
+#if SEP_SSA
+  data_blk_nor += ((CURSEG_HOT_NODE - CURSEG_HOT_DATA)
+     * c.segs_per_zone * c.blks_per_seg);
+#else
+	data_blk_nor +=	c.cur_seg[CURSEG_HOT_DATA] * c.blks_per_seg;
+#endif
 	raw_node->i.i_addr[get_extra_isize(raw_node)] = cpu_to_le32(data_blk_nor);
 
 	raw_node->i.i_ext.fofs = 0;
@@ -2197,9 +2217,13 @@ static int f2fs_add_default_dentry_root(void)
 	}
 
 	data_blk_offset = get_sb(main_blkaddr);
+#if SEP_SSA
+  data_blk_offset += ((CURSEG_HOT_NODE - CURSEG_HOT_DATA)
+     * c.segs_per_zone * c.blks_per_seg);
+#else
 	data_blk_offset += c.cur_seg[CURSEG_HOT_DATA] *
 				c.blks_per_seg;
-
+#endif
 	DBG(1, "\tWriting default dentry root, at offset 0x%08"PRIx64"\n",
 				data_blk_offset);
 	if (dev_write_block(dent_blk, data_blk_offset)) {

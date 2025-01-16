@@ -6,7 +6,9 @@
 #endif
 #define GRID_STRIPE 1
 #if GRID_STRIPE
-  #define GRID_CNT 8
+  #define GRID_CNT 16
 #endif
+
+#define SEP_SSA 1
 
 #endif

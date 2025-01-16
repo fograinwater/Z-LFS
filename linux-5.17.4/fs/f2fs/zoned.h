@@ -42,13 +42,13 @@
   #define DYNAMIC_STRIPE 1
 
   #if GRID_STRIPE
-    #define GRID_CNT 8
+    #define GRID_CNT 128
   #endif
 
   #define STRIPE_SMALL 0
-  #define STRIPE_MAX_CNT 16
-  #define STRIPE_CNT 8
-  #define STRIPE_MIN_CNT 4
+  #define STRIPE_MAX_CNT 8
+  #define STRIPE_CNT 4
+  #define STRIPE_MIN_CNT 2
   #define NODE_STRIPE 1
 #else // STRIPE 
   #define GRID_STRIPE 0
@@ -57,5 +57,11 @@
   #define STRIPE_MIN_CNT 1
   #define NODE_STRIPE 0
 #endif // STRIPE
+
+#define IGZO 1
+#define IG_SIZE 16
+#define IG_NR 8
+
+#define SEP_SSA 1
 
 #endif //_LINUX_ZONED_H

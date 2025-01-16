@@ -2063,12 +2063,6 @@ int f2fs_write_checkpoint(struct f2fs_sb_info *sbi, struct cp_control *cpc)
 	}
 	trace_f2fs_write_checkpoint(sbi->sb, cpc->reason, "start block_ops");
 
-#if 0
-	printk("(%s : %d) CP strat\n", 
-	  __func__, __LINE__);
-#endif
-  //ktime_get_raw_ts64(&ts_total[0]);
-
 #if META_FOR_ZNS
 	// before starting checkpoint, reset target zone
 	// now, only consider one zns
@@ -2140,20 +2134,7 @@ int f2fs_write_checkpoint(struct f2fs_sb_info *sbi, struct cp_control *cpc)
 		goto stop;
 	}
 	f2fs_flush_sit_entries(sbi, cpc);
-#if META_FOR_ZNS
-#if !NAIVE_MFZ
-	if (cpc->reason & CP_UMOUNT) {
-#else 
-  {
-#endif
-		err = flush_sum_blks(sbi, cpc);
-		if (err) {
-			f2fs_err(sbi, "flush_sum_blks failed err:%d, stop checkpoint", err);
-			f2fs_bug_on(sbi, !f2fs_cp_error(sbi));
-			goto stop;
-		}
-	}
-#endif
+
 	/* save inmem log status */
 	f2fs_save_inmem_curseg(sbi);
 	
@@ -2251,37 +2232,9 @@ stop:
 	/* update CP_TIME to trigger checkpoint periodically */
 	f2fs_update_time(sbi, CP_TIME);
 	trace_f2fs_write_checkpoint(sbi->sb, cpc->reason, "finish checkpoint");
-
-#if 0
-	if (f2fs_is_multi_device(sbi)){
-		printk("(%s : %d) error! : not support multi device!", 
-				__func__, __LINE__);
-		f2fs_bug_on(sbi, 1);
-	}
-	if (f2fs_blkz_is_seq(sbi, 0, cp_blkaddr)){
-		if(!zbd || !zbd->bdev){
-			f2fs_bug_on(sbi, 1);
-			printk("(%s : %d) error here", __func__, __LINE__);
-		} else {
-			//printk("(%s : %d) blk zone mgmt FINISH", __func__, __LINE__);
-			//printk("(%s : %d) blk zone mgmt cp_blkaddr(%u)", __func__, __LINE__, cp_blkaddr);
-			ktime_get_raw_ts64(&ts[0]);
-			blkdev_zone_mgmt(zbd->bdev, REQ_OP_ZONE_CLOSE, 
-					SECTOR_FROM_BLOCK(cp_blkaddr), 
-					zone_sectors, GFP_NOFS);
-			ktime_get_raw_ts64(&ts[1]);
-			calclock(ts, &zone_finTime, &zone_finCnt);
-		}
-	} else {
-		f2fs_warn(sbi, "error : not ZNS SSD");
-		printk("(%s : %d) cp_blkaddr : %u", __func__, __LINE__, cp_blkaddr);
-	}
-#endif
 #if 0
 	printk("(%s : %d) write checkpoint end\n", __func__, __LINE__);
 #endif
-	//ktime_get_raw_ts64(&ts_total[1]);
-	//calclock(ts_total, &wcpTime, &wcpCnt);
 out:
 	if (cpc->reason != CP_RESIZE)
 		up_write(&sbi->cp_global_sem);

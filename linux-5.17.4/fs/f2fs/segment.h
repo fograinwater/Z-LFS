@@ -82,7 +82,6 @@ static inline void sanity_check_seg_type(struct f2fs_sb_info *sbi,
 #define SEGMENT_SIZE(sbi)	(1ULL << ((sbi)->log_blocksize +	\
 					(sbi)->log_blocks_per_seg))
 
-
 #define BLKS_PER_SEC(sbi)					\
 	((sbi)->segs_per_sec * (sbi)->blocks_per_seg)
 #define GET_SEC_FROM_SEG(sbi, segno)				\
@@ -110,22 +109,7 @@ static inline void sanity_check_seg_type(struct f2fs_sb_info *sbi,
 	(GET_SEGOFF_FROM_SEG0(sbi, blk_addr) & ((sbi)->blocks_per_seg - 1))
 
 #endif // !GRID_STRIPE
-/*
-#if META_FOR_ZNS
 
-#define GET_SEGNO_FROM_SUM_ADDR(sbi, blkaddr)	\
-  (get_segno_from_sum_addr(sbi, blkaddr))
-//	((blkaddr) - (sbi)->sm_info->ssa_blkaddr)
-#define GET_SUM_BLOCK(sbi, segno)				\
-	(current_sum_addr(sbi, segno))
-
-#else // META_FOR_ZNS
-
-#define GET_SUM_BLOCK(sbi, segno)				\
-	((sbi)->sm_info->ssa_blkaddr + (segno))
-
-#endif // META_FOR_ZNS
-*/
 #define GET_SUM_TYPE(footer) ((footer)->entry_type)
 #define SET_SUM_TYPE(footer, type) ((footer)->entry_type = (type))
 
@@ -389,14 +373,6 @@ static inline struct curseg_info *CURSEG_I(struct f2fs_sb_info *sbi, int type)
 {
 	return (struct curseg_info *)(SM_I(sbi)->curseg_array + type);
 }
-
-#if 0 //STRIPE_SMALL
-static inline struct curseg_info *STIPRE_CURSEG_I(struct f2fs_sb_info *sbi, 
-		int type, int idx){
-
-	return (struct curseg_info *)(SM_I(sbi)->striped_cursegs + type * NR_PERSISTENT_LOG + idx);
-}
-#endif
 static inline struct seg_entry *get_seg_entry(struct f2fs_sb_info *sbi,
 						unsigned int segno)
 {
@@ -775,7 +751,11 @@ static inline unsigned short curseg_blkoff(struct f2fs_sb_info *sbi, int type)
 
 static inline void check_seg_range(struct f2fs_sb_info *sbi, unsigned int segno)
 {
-	f2fs_bug_on(sbi, segno > TOTAL_SEGS(sbi) - 1);
+
+  if (segno > TOTAL_SEGS(sbi) - 1) {
+    printk("segno:%u, total seg:%u", segno, TOTAL_SEGS(sbi));
+	  f2fs_bug_on(sbi, 1);
+  }
 }
 
 static inline void verify_fio_blkaddr(struct f2fs_io_info *fio)
@@ -799,6 +779,14 @@ static inline int check_block_count(struct f2fs_sb_info *sbi,
 	int valid_blocks = 0;
 	int cur_pos = 0, next_pos;
 	unsigned int usable_blks_per_seg = f2fs_usable_blks_in_seg(sbi, segno);
+//adjust bitmap checking size
+#if SEP_SSA
+  // unit of find_next_zero_bit_le
+  size_t unit = sizeof(const unsigned long);
+  if(usable_blks_per_seg % (unit)){
+    usable_blks_per_seg = round_up(usable_blks_per_seg, unit);
+  }
+#endif
 
 	/* check bitmap with valid block count */
 	do {
@@ -1070,26 +1058,6 @@ static inline unsigned int START_BLOCK(struct f2fs_sb_info *sbi,
   start_addr += segoff_in_sec * BLKS_PER_SUBSEG(sbi);
 
   return start_addr;
-#if 0 //do not use this
-/* section size is 1 blkzone
- *
- * small_seg_size = seg_size / grid_cnt
- * seg_cnt = sec_size / small_seg_size
- * secno = segno / seg_cnt
- * offset = segno / seg_cnt
- * sec_start = secno * (zone_size * grid_cnt)
- * start_blkaddr = sec_start + off * (small_seg_size)
- */
-
-  block_t target_blkaddr;
-  unsigned int segs_per_blkz = sbi->segs_per_sec * grid_cnt;
-  unsigned int zoneno = GET_R2L_SEGNO(FREE_I(sbi), segno) / segs_per_blkz * grid_cnt;
-  unsigned int segoff_in_zone = GET_R2L_SEGNO(FREE_I(sbi), segno) % segs_per_blkz;
-  
-  target_blkaddr = SEG0_BLKADDR(sbi) + zoneno * sbi->blks_per_blkz + segoff_in_zone * segsize 
-   // logical segment number
-  return target_blkadddr;
-#endif
 }
 /* segment allocation:
  * e.g) a segment include subsegment 1~4
@@ -1119,6 +1087,7 @@ static inline unsigned int NEXT_FREE_BLKADDR(struct f2fs_sb_info *sbi,
 
   return target_blkaddr;
 }
+#if !SEP_SSA
 /*
  * blkaddr -> segno
  *
@@ -1171,6 +1140,7 @@ static inline unsigned int GET_BLKOFF_FROM_SEG0(struct f2fs_sb_info *sbi,
   blkoff_in_seg = (blkz_off * BLKS_PER_SUBSEG(sbi)) + blkoff_in_subseg;
   return blkoff_in_seg;
 }
+#endif
 
 #endif //GRID_STRIPE
 
@@ -1200,8 +1170,10 @@ static inline unsigned int get_segno_from_sum_addr(struct f2fs_sb_info *sbi, blo
 #define GET_SEGNO_FROM_SUM_ADDR(sbi, blkaddr)	\
   (get_segno_from_sum_addr(sbi, blkaddr))
 //	((blkaddr) - (sbi)->sm_info->ssa_blkaddr)
+#if !SEP_SSA
 #define GET_SUM_BLOCK(sbi, segno)				\
 	(current_sum_addr(sbi, segno))
+#endif
 
 #else // META_FOR_ZNS
 
@@ -1209,3 +1181,153 @@ static inline unsigned int get_segno_from_sum_addr(struct f2fs_sb_info *sbi, blo
 	((sbi)->sm_info->ssa_blkaddr + (segno))
 
 #endif // META_FOR_ZNS
+
+
+#if SEP_SSA
+// segno and secno must be valid
+// segno -> seg_offset in section
+#define GET_SEG_OFFSET_IN_SEC(sbi, segno) \
+  (segno - (GET_SEC_FROM_SEG(sbi, segno) * (sbi->segs_per_sec)))
+#define GET_LAST_SEGNO(sbi, secno) \
+  ((secno * sbi->segs_per_sec) + (SM_I(sbi)->usable_segs_in_sec))
+#define IS_LAST_SEG(sbi, segno) \
+  (GET_SEG_OFFSET_IN_SEC(sbi, segno) == \
+  ((SM_I(sbi)->usable_segs_in_sec) - 1))
+
+static inline unsigned int virt_to_logical_in_sec(struct f2fs_sb_info * sbi, block_t viraddr) {
+  block_t blkaddr;
+
+  unsigned int zone_offset_in_sec = (viraddr / BLKS_PER_SUBSEG(sbi))
+    % SM_I(sbi)->grid_cnt;
+
+  unsigned int subseg_offset_in_zone = (viraddr / sbi->blocks_per_seg);
+  unsigned blk_offset_in_subseg = viraddr % BLKS_PER_SUBSEG(sbi);
+
+  blkaddr = zone_offset_in_sec * sbi->blocks_per_blkz
+          + subseg_offset_in_zone * BLKS_PER_SUBSEG(sbi)
+          + blk_offset_in_subseg;
+
+  return blkaddr;
+}
+
+#define SEG_TO_VIRADDR(sbi, segno) \
+  (GET_SEG_OFFSET_IN_SEC(sbi, segno) * (sbi->blocks_per_seg + 1))
+#define SEC_SIZE_BLKS(sbi) \
+  ((sbi->blocks_per_blkz) * (SM_I(sbi)->grid_cnt))
+
+static inline unsigned int virt_to_logical_from_block0(struct f2fs_sb_info *sbi, block_t viraddr, unsigned int secno) {
+  block_t sec_start_blkaddr = MAIN_BLKADDR(sbi) + 
+    secno * SEC_SIZE_BLKS(sbi);
+  return sec_start_blkaddr + virt_to_logical_in_sec(sbi, viraddr);
+}
+
+static inline unsigned int start_block_func(struct f2fs_sb_info *sbi, unsigned int segno) {
+  block_t viraddr, blkaddr;
+  unsigned int secno = GET_SEC_FROM_SEG(sbi, segno);
+
+  viraddr = SEG_TO_VIRADDR(sbi, segno);
+  blkaddr = virt_to_logical_from_block0(sbi, viraddr, secno);
+  return blkaddr;
+}
+
+static inline unsigned int get_sum_block_addr(struct f2fs_sb_info *sbi,
+  unsigned int segno) {
+  block_t viraddr, blkaddr;
+  unsigned int secno = GET_SEC_FROM_SEG(sbi, segno);
+  if (!SM_I(sbi))
+    f2fs_bug_on(sbi, 1);
+
+  if (IS_LAST_SEG(sbi, segno)) {
+    unsigned int dev_idx = f2fs_get_first_zns_index(sbi);
+    viraddr = FDEV(dev_idx).zone_capacity_blocks[0];
+    viraddr *= SM_I(sbi)->grid_cnt;
+    viraddr -= 1;
+  } else {
+    viraddr = SEG_TO_VIRADDR(sbi, segno + 1) - 1;
+  }
+  blkaddr = virt_to_logical_from_block0(sbi, viraddr, secno);
+
+  return blkaddr;
+}
+
+static inline unsigned int next_free_blkaddr(struct f2fs_sb_info *sbi,
+  struct curseg_info *curseg) {
+  block_t start_viraddr, viraddr, blkaddr;
+  start_viraddr = SEG_TO_VIRADDR(sbi, curseg->segno);
+  viraddr = start_viraddr + curseg->next_blkoff;
+
+  blkaddr = virt_to_logical_from_block0(sbi, viraddr, GET_SEC_FROM_SEG(sbi, curseg->segno));
+  return blkaddr;
+}
+#define START_BLOCK(sbi, segno) start_block_func(sbi, segno)
+#define NEXT_FREE_BLKADDR(sbi, curseg) \
+  next_free_blkaddr(sbi, curseg)
+
+static inline block_t logical_to_virt(struct f2fs_sb_info *sbi,
+  block_t blkaddr) {
+  block_t viraddr, blkaddr_from_seg0;
+  unsigned int zone_offset_in_sec, subseg_offset_in_sec, blk_offset_in_sec;
+
+  blkaddr_from_seg0 = blkaddr - MAIN_BLKADDR(sbi);
+  zone_offset_in_sec = (blkaddr_from_seg0 / sbi->blocks_per_blkz) % SM_I(sbi)->grid_cnt;
+  subseg_offset_in_sec = (blkaddr_from_seg0 % sbi->blocks_per_blkz) / BLKS_PER_SUBSEG(sbi); 
+  blk_offset_in_sec = blkaddr_from_seg0 % BLKS_PER_SUBSEG(sbi);
+
+  viraddr = blk_offset_in_sec
+          + (subseg_offset_in_sec * sbi->blocks_per_seg)
+          + (zone_offset_in_sec * BLKS_PER_SUBSEG(sbi));
+  return viraddr;
+}
+
+static inline unsigned int logical_to_sec(struct f2fs_sb_info *sbi,
+  block_t blkaddr) {
+  unsigned int secno;
+  secno = (blkaddr - MAIN_BLKADDR(sbi))
+        / (sbi->blocks_per_blkz * SM_I(sbi)->grid_cnt);
+  return secno;
+}
+
+#define GET_SEC_FROM_BLKADDR(sbi, blkaddr) \
+  ((blkaddr - MAIN_BLKADDR(sbi)) / \
+    (sbi->blocks_per_blkz * (SM_I(sbi)->grid_cnt)))
+
+#define VIRT_TO_SEGOFF(sbi, viraddr) \
+  (viraddr / (sbi->blocks_per_seg + 1))
+
+
+static inline unsigned int get_segno_from_seg0(struct f2fs_sb_info *sbi,
+  block_t blkaddr) {
+  unsigned int secno, segno, segs_before_main;
+  block_t viraddr;
+
+  segs_before_main = (MAIN_BLKADDR(sbi) - SEG0_BLKADDR(sbi)) / sbi->blocks_per_seg;
+  
+  secno = GET_SEC_FROM_BLKADDR(sbi, blkaddr);
+  viraddr = logical_to_virt(sbi, blkaddr);
+  segno = secno * sbi->segs_per_sec + VIRT_TO_SEGOFF(sbi, viraddr);
+
+  return segno + segs_before_main;
+}
+static inline unsigned int get_blkoff_from_seg0(struct f2fs_sb_info *sbi, block_t blkaddr) {
+  block_t viraddr, block_off;
+  viraddr = logical_to_virt(sbi, blkaddr);
+  block_off = viraddr % (sbi->blocks_per_seg + 1);
+  if (block_off == sbi->blocks_per_seg)
+    f2fs_bug_on(sbi, 1);
+  return block_off;
+}
+#define GET_SEGNO_FROM_SEG0(sbi, blkaddr) \
+  get_segno_from_seg0(sbi, blkaddr)
+#define GET_BLKOFF_FROM_SEG0(sbi, blkaddr) \
+  get_blkoff_from_seg0(sbi, blkaddr)
+
+#define GET_SUM_BLOCK(sbi, segno)				\
+	(get_sum_block_addr(sbi, segno))
+
+#endif //SEP_SSA
+
+#if IGZO
+#define GET_IG_FROM_SEC(sbi, secno) (secno % IG_NR)
+#define GET_IG_FROM_SEG(sbi, segno) \
+  (GET_SEC_FROM_SEG(sbi, segno) % IG_NR)
+#endif

@@ -1046,6 +1046,9 @@ enum {
 	NR_PERSISTENT_LOG,	/* number of persistent log */
 	CURSEG_COLD_DATA_PINNED = NR_PERSISTENT_LOG,
 				/* pinned file that needs consecutive block address */
+#if IGZO
+  CURSEG_NOT_ALLOC = NR_PERSISTENT_LOG,
+#endif
 	CURSEG_ALL_DATA_ATGC,	/* SSR alloctor in hot/warm/cold data area */
 	NO_CHECK_TYPE,		/* number of persistent & inmem log */
 };
@@ -1071,9 +1074,6 @@ struct f2fs_sm_info {
 	struct free_segmap_info *free_info;	/* free segment information */
 	struct dirty_seglist_info *dirty_info;	/* dirty segment information */
 	struct curseg_info *curseg_array;	/* active segment information */
-#if 0 //STRIPE_SMALL
-	struct curseg_info *striped_cursegs; /* 6 * stripe count */
-#endif
 
 	struct rw_semaphore curseg_lock;	/* for preventing curseg change */
 
@@ -1110,13 +1110,19 @@ struct f2fs_sm_info {
 	struct radix_tree_root ssa_log_root;	/* in-mem cached sum log blocks */
 #endif
 #endif
+  unsigned int grid_cnt;  /* the number of zones to grid stripe for a segment */
 #if STRIPE
 	unsigned int stripe_cnt;	/* the number of zones to write for each log */
   unsigned int stripe_max_cnt;
   unsigned int stripe_min_cnt;
-#if GRID_STRIPE
-  unsigned int grid_cnt;  /* the number of zones to grid stripe for a segment */
+  unsigned short node_alloc_IG[IG_NR]; /* mapping IG to node stream */
+  unsigned short data_alloc_IG[IG_NR]; /* mapping IG to data stream */
+  unsigned int free_sz_cnt[IG_NR];
 #endif
+#if SEP_SSA
+// usable segment excluding summary block in a section
+  unsigned int usable_segs_in_sec;
+  struct mutex ssa_mutex;
 #endif
 
 	unsigned int segment_count;	/* total # of segments */
@@ -1196,6 +1202,9 @@ enum page_type {
 	META,
 	NR_PAGE_TYPE,
 	META_FLUSH,
+#if SEP_SSA
+  PAGE_SEP_SSA,
+#endif
 	INMEM,		/* the below types are used by tracepoints only. */
 	INMEM_DROP,
 	INMEM_INVALIDATE,
@@ -1259,6 +1268,9 @@ enum iostat_type {
 
 	/* other */
 	FS_DISCARD,			/* discard */
+#if SEP_SSA
+  FS_SEP_SSA_IO, 
+#endif
 	NR_IO_TYPE,
 };
 
@@ -3765,6 +3777,9 @@ int advance_meta_zone_wp(struct f2fs_sb_info *sbi, block_t zoff,
 int reset_meta_zone_towrite(struct f2fs_sb_info *sbi,
 		block_t zone_off, int type);
 #endif
+#if SEP_SSA
+inline int f2fs_sync_single_sum_page(struct page *page);
+#endif
 
 /*
  * data.c
@@ -3775,6 +3790,10 @@ int f2fs_init_bio_entry_cache(void);
 void f2fs_destroy_bio_entry_cache(void);
 void f2fs_submit_bio(struct f2fs_sb_info *sbi,
 				struct bio *bio, enum page_type type);
+#if SEP_SSA
+void f2fs_submit_merged_write_of_type(struct f2fs_sb_info *sbi,
+        unsigned short seg_type);
+#endif
 void f2fs_submit_merged_write(struct f2fs_sb_info *sbi, enum page_type type);
 void f2fs_submit_merged_write_cond(struct f2fs_sb_info *sbi,
 				struct inode *inode, struct page *page,
@@ -3787,6 +3806,7 @@ int f2fs_merge_page_bio(struct f2fs_io_info *fio);
 void f2fs_submit_page_write(struct f2fs_io_info *fio);
 struct block_device *f2fs_target_device(struct f2fs_sb_info *sbi,
 			block_t blk_addr, struct bio *bio);
+int f2fs_get_first_zns_index(struct f2fs_sb_info *sbi);
 int f2fs_target_device_index(struct f2fs_sb_info *sbi, block_t blkaddr);
 void f2fs_set_data_blkaddr(struct dnode_of_data *dn);
 void f2fs_update_data_blkaddr(struct dnode_of_data *dn, block_t blkaddr);

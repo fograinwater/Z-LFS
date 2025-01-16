@@ -676,6 +676,11 @@ static int get_victim_by_default(struct f2fs_sb_info *sbi,
 	unsigned int nsearched;
 	bool is_atgc;
 	int ret = 0;
+#if IGZO
+  int i;
+  int target_IG = 0;
+  int free_cnt = SM_I(sbi)->free_sz_cnt[0];
+#endif
 
 	mutex_lock(&dirty_i->seglist_lock);
 	last_segment = MAIN_SECS(sbi) * sbi->segs_per_sec;
@@ -735,7 +740,14 @@ retry:
 		if (p.min_segno != NULL_SEGNO)
 			goto got_it;
 	}
-
+#if IGZO
+  for (i = 1; i < IG_NR; i++) {
+    if (SM_I(sbi)->free_sz_cnt[i] < free_cnt) {
+      target_IG = i;
+      free_cnt = SM_I(sbi)->free_sz_cnt[i];
+    }
+  }
+#endif
 	while (1) {
 		unsigned long cost, *dirty_bitmap;
 		unsigned int unit_no, segno;
@@ -770,7 +782,11 @@ retry:
 #endif
 
 		secno = GET_SEC_FROM_SEG(sbi, segno);
-
+#if IGZO
+    if (GET_IG_FROM_SEC(sbi, secno) != target_IG) {
+      goto next;
+    }
+#endif
 		if (sec_usage_check(sbi, secno))
 			goto next;
 
@@ -802,12 +818,6 @@ retry:
 			goto next;
 		}
 
-#if META_FOR_ZNS
-#if 0//DEBUG_GC
-    if (secno == avoid_secno)
-      goto next;
-#endif
-#endif
 		cost = get_gc_cost(sbi, segno, &p);
 
 		if (p.min_cost > cost) {
@@ -1055,9 +1065,6 @@ block_t f2fs_start_bidx_of_node(unsigned int node_ofs, struct inode *inode)
 	return bidx * ADDRS_PER_BLOCK(inode) + ADDRS_PER_INODE(inode);
 }
 
-#if 0//DEBUG_GC
-static unsigned int dbg_gc_cnt = 0;
-#endif
 static unsigned int dbg_gc_cnt = 0;
 static bool is_alive(struct f2fs_sb_info *sbi, struct f2fs_summary *sum,
 		struct node_info *dni, block_t blkaddr, unsigned int *nofs, int dbg)
@@ -1779,10 +1786,6 @@ static int __get_victim(struct f2fs_sb_info *sbi, unsigned int *victim,
 	return ret;
 }
 
-#if ZF2FS_MONITOR
-extern unsigned int f2fs_gc_monitor;
-#endif
-
 static int do_garbage_collect(struct f2fs_sb_info *sbi,
 				unsigned int start_segno,
 				struct gc_inode_list *gc_list, int gc_type,
@@ -1812,9 +1815,6 @@ static int do_garbage_collect(struct f2fs_sb_info *sbi,
 
 #if  DEBUG_GC
   printk("(%s:%d) gc start", __func__, __LINE__);
-#endif
-#if ZF2FS_MONITOR
-  f2fs_gc_monitor++;
 #endif
 
 	if (__is_large_section(sbi))

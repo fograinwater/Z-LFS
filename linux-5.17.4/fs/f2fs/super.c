@@ -252,127 +252,32 @@ static match_table_t f2fs_tokens = {
 
 
 #if ZF2FS_MONITOR
-block_t f2fs_monitor_pages[6] = {0,};
-unsigned int f2fs_gc_monitor = 0;
 
-int f2fs_monitor_func(void *data){
-  
-  struct f2fs_sb_info *sbi = data;
-  long time_ms = 1000;
-  int i, j;
-  int c = 0;
-  unsigned int segno, old_segno;
-  struct curseg_info *curseg;
-  unsigned int change = 0;
-  unsigned int opened = 0;
-  
-  unsigned int increase_threshold = 50; // %
-  unsigned int decrease_threshold = 10; // %
-  
-#if GRID_STRIPE
-  unsigned int max_total_wanted = 36; //20;
-  unsigned int max_wanted_size =  20;//16; // 128
-  int min_wanted_size = 1; // 1
-  block_t base_speed = 8 /* grid cnt */ * 
-    40 /* speed per zone (MB/s) */ * 1024 / 4 /* pages */; 
-#else 
-  unsigned int max_total_wanted = 288;
-  unsigned int max_wanted_size =  160;
-  int min_wanted_size = 8; 
-  block_t base_speed = 40 /* speed per zone (MB/s) */ * 1024 / 4 /* pages */; 
-#endif
-  int decisions[6] = {0, };
-  
-  unsigned int data_pages, node_pages;
-  printk("HD WD CD HN WN CN");
-  while (!kthread_should_stop()) {
-      data_pages = f2fs_monitor_pages[0] + f2fs_monitor_pages[1] + f2fs_monitor_pages[2];
-      node_pages = f2fs_monitor_pages[3] + f2fs_monitor_pages[4] + f2fs_monitor_pages[5];
+static void reclaim_zones(struct f2fs_sb_info *sbi, struct curseg_info *curseg) {
+  unsigned int segno;
 
-/*
-    printk("%u %u %u %u %u %u", 
-      f2fs_monitor_pages[0],
-      f2fs_monitor_pages[1],
-      f2fs_monitor_pages[2],
-      f2fs_monitor_pages[3],
-      f2fs_monitor_pages[4],
-      f2fs_monitor_pages[5]
-    );   
-*/
-    opened = 0;
+  // free reclaimable zones 
+  if (curseg->reclaimable_start != curseg->reclaimable_end) {
+    while (curseg->reclaimable_start != curseg->reclaimable_end) {
+      spin_lock(&curseg->reclaimable_lock);
+      //printk("(%s:%d) reclaim zones", __func__, __LINE__);
+      segno = curseg->reclaimable_zones[curseg->reclaimable_start];
+      curseg->reclaimable_start++;
+      segno = GET_SEG_FROM_SEC(sbi, GET_SEC_FROM_SEG(sbi, segno));
+      spin_unlock(&curseg->reclaimable_lock);
 
-    for (i = 0; i < 6; i++) {
-/*
-      if (f2fs_monitor_pages[i] > 80000)
-        printk("(%s:%d) %d up", __func__, __LINE__, i);
-      
-    if (f2fs_monitor_pages[i] < 30000)
-        printk("(%s:%d) %d down", __func__, __LINE__, i);
-*/
-      curseg = CURSEG_I(sbi, i);
-      //opened = sbi->f2fs_open_zones / 8 + 1;
+      //change zone status into full
+      blkdev_zone_mgmt(FDEV(0).bdev, REQ_OP_ZONE_FINISH, 
+          SECTOR_FROM_BLOCK(START_BLOCK(sbi, segno)), 
+          SECTOR_FROM_BLOCK(sbi->blocks_per_blkz * SM_I(sbi)->grid_cnt),
+          GFP_NOFS);
+      //update section table
+      get_sec_entry(sbi, segno)->inuse = 0;        
+    } 
+  }
+}
 
-      mutex_lock(&curseg->curseg_mutex);
-      opened += curseg->wanted_size;
-      if (curseg->inactive_end >= curseg->inactive_start) {
-        opened = opened + (curseg->inactive_end - curseg->inactive_start);
-      } else {
-        opened = opened + (128 + curseg->inactive_end - curseg->inactive_start);
-      }
-      if (curseg->reclaimable_end >= curseg->reclaimable_start) {
-        opened = opened + (curseg->reclaimable_end - curseg->reclaimable_start);
-      } else {
-        opened = opened + (128 + curseg->reclaimable_end - curseg->reclaimable_start);
-      }
-      mutex_unlock(&curseg->curseg_mutex);
-
-/*
-      if (i == CURSEG_COLD_DATA) {
-        if (f2fs_gc_monitor > 1) {
-          decisions[i] = 1;
-        } else {
-          decisions[i] = 0;
-        }
-        f2fs_monitor_pages[i] = 0;
-        continue;
-      }
-*/
-/*
-      if (f2fs_monitor_pages[i] == 0){
-        decisions[i] = 0;
-      } else 
-*/
-      // free reclaimable zones 
-      if (curseg->reclaimable_start != curseg->reclaimable_end) {
-        while (curseg->reclaimable_start != curseg->reclaimable_end) {
-          spin_lock(&curseg->reclaimable_lock);
-          //printk("(%s:%d) reclaim zones", __func__, __LINE__);
-          segno = curseg->reclaimable_zones[curseg->reclaimable_start];
-          curseg->reclaimable_start++;
-          old_segno = segno;
-          segno = GET_SEG_FROM_SEC(sbi, GET_SEC_FROM_SEG(sbi, segno));
-          spin_unlock(&curseg->reclaimable_lock);
-
-          //change zone status into full
-#if GRID_STRIPE
-          blkdev_zone_mgmt(FDEV(0).bdev, REQ_OP_ZONE_FINISH, 
-              SECTOR_FROM_BLOCK(START_BLOCK(sbi, segno)), 
-              SECTOR_FROM_BLOCK(sbi->blocks_per_blkz * SM_I(sbi)->grid_cnt),
-              GFP_NOFS);
-#else 
-          blkdev_zone_mgmt(FDEV(0).bdev, REQ_OP_ZONE_FINISH, 
-              SECTOR_FROM_BLOCK(START_BLOCK(sbi, segno)), 
-              SECTOR_FROM_BLOCK(sbi->blocks_per_blkz),
-              GFP_NOFS);
-#endif
-          //update section table
-          get_sec_entry(sbi, segno)->inuse = 0;        
-          //printk("(%s:%d) reclaim zones end : %u(%u)", 
-          //  __func__, __LINE__, old_segno, 
-         //   GET_SEC_FROM_SEG(sbi, old_segno));
-        } 
-      }
-
+static void move_to_reclaim(struct f2fs_sb_info *sbi, struct curseg_info *curseg) {
       // move inactive to reclaimable
       // reclaim condition: inactive exist for one period
       if (curseg->inactive_start != curseg->inactive_end) {
@@ -391,153 +296,209 @@ int f2fs_monitor_func(void *data){
           curseg->inactive_start++; 
           if (curseg->inactive_start > 127)
             curseg->inactive_start = 0;
-
-          //printk("(%s:%d) inactive to reclaim", __func__, __LINE__);
         }
         spin_unlock(&curseg->reclaimable_lock);
         spin_unlock(&curseg->inactive_lock);
       }
-      if (node_pages * 4 > data_pages){
 
-        if (i==0)
-          printk("md-intensive mode");
+}
+static inline int calc_target_wanted (unsigned int active_log_nr, 
+  block_t written_pages, block_t total_written_pages) {
+  unsigned int target_wanted;
+  if (active_log_nr == 0) {
+    // do not change previous decision
+    return -1; 
+  }
+  if (written_pages == 0) {
+    return 0;
+  }
 
-        // decision
-        if (f2fs_monitor_pages[i] > curseg->wanted_size * base_speed * 10 / 100) {
-          decisions[i] = 1;
-        } else if (f2fs_monitor_pages[i] < curseg->wanted_size * base_speed * 2 / 100) {
-          decisions[i] = -1; 
-        } else {
-          decisions[i] = 0;
-        }
+  if (active_log_nr == 1) {
+    // maximum parallelism
+    target_wanted = IG_NR;
+  } else {
+    target_wanted = 1 + (100 * written_pages / total_written_pages *
+      (IG_NR - active_log_nr) / 100);
+  }
+  return target_wanted;
+}
+
+block_t f2fs_monitor_pages[6] = {0,};
+int f2fs_monitor_func(void *data){
+  
+  struct f2fs_sb_info *sbi = data;
+  long time_ms = 1000;
+  int i, j;
+  struct curseg_info *curseg;
+  unsigned int change = 0;
+  unsigned int opened = 0;
+  
+  
+  unsigned int max_total_wanted = (2 * IG_SIZE * IG_NR + 4 * IG_SIZE) / IG_SIZE;
+  unsigned int max_wanted_size =  128 / IG_SIZE;//16; // 128
+//  int min_wanted_size = 1; // 1
+  int min_wanted_size = 1; // 1
+  
+  unsigned int data_pages, node_pages;
+  unsigned int active_data_log = 0, active_node_log = 0;
+  int decisions[NR_PERSISTENT_LOG] = {0, };
+  int target_wanted;
+  int prev_target[NR_PERSISTENT_LOG] = {0, };
+
+  int intensive_log = 0;
+  block_t intensive_log_pages = 0;
+  int target_wanted_sum = 0;
+
+  printk("HD WD CD HN WN CN");
+  while (!kthread_should_stop()) {
+/*
+      unsigned int *free_cnt = SM_I(sbi)->free_sz_cnt;
+      printk("(%s:%d) free cnt %u %u %u %u %u %u",
+        __func__, __LINE__, free_cnt[0],free_cnt[1],free_cnt[2],
+                            free_cnt[3],free_cnt[4],free_cnt[5]);
+*/
+      data_pages = f2fs_monitor_pages[CURSEG_HOT_DATA]
+                 + f2fs_monitor_pages[CURSEG_WARM_DATA]
+                 + f2fs_monitor_pages[CURSEG_COLD_DATA];
+      node_pages = f2fs_monitor_pages[CURSEG_HOT_NODE]
+                 + f2fs_monitor_pages[CURSEG_WARM_NODE]
+                 + f2fs_monitor_pages[CURSEG_COLD_NODE];
+
+    opened = 0;
+
+    // state transition phase
+    for (i = 0; i < 6; i++) {
+      curseg = CURSEG_I(sbi, i);
+
+      // for smooting changes of striping width
+      mutex_lock(&curseg->curseg_mutex);
+      opened += curseg->wanted_size;
+      if (curseg->inactive_end >= curseg->inactive_start) {
+        opened = opened + (curseg->inactive_end - curseg->inactive_start);
       } else {
-        if (f2fs_monitor_pages[i] > curseg->wanted_size * base_speed * increase_threshold / 100) {
-          decisions[i] = 1;
-        } else if (f2fs_monitor_pages[i] < curseg->wanted_size * base_speed * decrease_threshold / 100) {
-          decisions[i] = -1; 
+        opened = opened + (128 + curseg->inactive_end - curseg->inactive_start);
+      }
+      if (curseg->reclaimable_end >= curseg->reclaimable_start) {
+        opened = opened + (curseg->reclaimable_end - curseg->reclaimable_start);
+      } else {
+        opened = opened + (128 + curseg->reclaimable_end - curseg->reclaimable_start);
+      }
+      mutex_unlock(&curseg->curseg_mutex);
+
+      if (f2fs_monitor_pages[i] > 0) {
+        if (IS_DATASEG(i)) {
+          active_data_log++;
         } else {
-          decisions[i] = 0;
+          active_node_log++;
         }
       }
+      reclaim_zones(sbi, curseg);
+      move_to_reclaim(sbi, curseg);
+
+    }
+/*
+    printk("(%s:%d) active data %d node %d", 
+        __func__, __LINE__, active_data_log, active_node_log);
+*/
+    // set target striping width
+    for (i = 0; i < 6; i++) {
+
+      if (IS_DATASEG(i)){
+        target_wanted = calc_target_wanted(active_data_log,
+          f2fs_monitor_pages[i], data_pages); 
+      } else {
+        target_wanted = calc_target_wanted(active_node_log,
+          f2fs_monitor_pages[i], node_pages); 
+      }
+
+      if (target_wanted == -1) {
+        target_wanted = prev_target[i];
+      } else {
+        prev_target[i] = target_wanted;
+      }
+
+      //adjust target wanted to maximize parallelism
+      target_wanted_sum += prev_target[i];
+      if (intensive_log_pages < f2fs_monitor_pages[i]) {
+        intensive_log = i;
+        intensive_log_pages = f2fs_monitor_pages[i];
+      }
+
+      if (i == CURSEG_COLD_DATA) {
+/*
+        printk("(%s:%d) prev_target %d %d %d %d %d %d", __func__,__LINE__,
+          prev_target[0],
+          prev_target[1],
+          prev_target[2],
+          prev_target[3],
+          prev_target[4],
+          prev_target[5]);
+        printk("adjust: %d, %d", target_wanted_sum, intensive_log);
+*/
+        if (active_data_log > 1 && target_wanted_sum < IG_NR) {
+          prev_target[intensive_log] += (IG_NR - target_wanted_sum);
+        }
+        intensive_log = 3;
+        intensive_log_pages = 0;
+        target_wanted_sum = 0;
+      } else if (i == CURSEG_COLD_NODE) {
+        if (active_node_log > 1 && target_wanted_sum < IG_NR) {
+          prev_target[intensive_log] += (IG_NR - target_wanted_sum);
+        }
+        intensive_log = 0;
+        intensive_log_pages = 0;
+        target_wanted_sum = 0;
+      }
+
       f2fs_monitor_pages[i] = 0;
     }
-    c++;
-    f2fs_gc_monitor = 0;
-    
 
-/*
-    printk("Decision: %d %d %d %d %d %d", 
-      decisions[0],
-      decisions[1],
-      decisions[2],
-      decisions[3],
-      decisions[4],
-      decisions[5]
-    );   
-*/
-    //reclaim
-    if (curseg->reclaimable_start != curseg->reclaimable_end) {
-      while (curseg->reclaimable_start != curseg->reclaimable_end) {
-        spin_lock(&curseg->reclaimable_lock);
-	      //printk("(%s:%d) reclaim zones", __func__, __LINE__);
-        segno = curseg->reclaimable_zones[curseg->reclaimable_start];
-        curseg->reclaimable_start++;
-        old_segno = segno;
-        segno = GET_SEG_FROM_SEC(sbi, GET_SEC_FROM_SEG(sbi, segno));
-        spin_unlock(&curseg->reclaimable_lock);
-
-        //change zone status into full
-#if GRID_STRIPE 
-        blkdev_zone_mgmt(FDEV(0).bdev, REQ_OP_ZONE_FINISH, 
-            SECTOR_FROM_BLOCK(START_BLOCK(sbi, segno)), 
-            SECTOR_FROM_BLOCK(sbi->blocks_per_blkz * SM_I(sbi)->grid_cnt),
-            GFP_NOFS);
-#else
-        blkdev_zone_mgmt(FDEV(0).bdev, REQ_OP_ZONE_FINISH, 
-            SECTOR_FROM_BLOCK(START_BLOCK(sbi, segno)), 
-            SECTOR_FROM_BLOCK(sbi->blocks_per_blkz),
-            GFP_NOFS);
-#endif
-        //update section table
-        get_sec_entry(sbi, segno)->inuse = 0;        
-	      //printk("(%s:%d) reclaim zones end : %u(%u)", 
-        //  __func__, __LINE__, old_segno, 
-          //GET_SEC_FROM_SEG(sbi, old_segno));
-      } 
-    }
-
-    // reclaim condition: inactive exist for one period
-    if (curseg->inactive_start != curseg->inactive_end) {
-      spin_lock(&curseg->inactive_lock);
-      spin_lock(&curseg->reclaimable_lock);
-      while (curseg->inactive_start != curseg->inactive_end) {
-        //copy
-        if (curseg->reclaimable_end > 127)
-          curseg->reclaimable_end = 0;
-
-        curseg->reclaimable_zones[curseg->reclaimable_end] =
-          curseg->inactive_zones[curseg->inactive_start]; 
-        curseg->reclaimable_end++;
-        //remove
-        curseg->inactive_zones[curseg->inactive_start] = NULL_SEGNO;
-        curseg->inactive_start++; 
-        if (curseg->inactive_start > 127)
-          curseg->inactive_start = 0;
-
-//        printk("(%s:%d) inactive to reclaim", __func__, __LINE__);
+    // deciside to scale up/down superzone
+    for (i = 0; i < 6; i++) {
+      curseg = CURSEG_I(sbi, i);
+      if (prev_target[i] > curseg->wanted_size) {
+        decisions[i] = 1;
+      } else if (prev_target[i] ==  curseg->wanted_size) {
+        decisions[i] = 0;
+      } else {
+        decisions[i] = -1;
       }
-      spin_unlock(&curseg->reclaimable_lock);
-      spin_unlock(&curseg->inactive_lock);
     }
 
+    active_data_log = 0;
+    active_node_log = 0;
+
+// for debugging
+/*
+    printk("(%s:%d) decisions %d %d %d %d %d %d", __func__,__LINE__,
+      decisions[0],decisions[1],decisions[2],decisions[3],decisions[4],decisions[5]);
+*/
     for (j = 0; j < 6; j++) {
 
-    // for test  
       curseg = CURSEG_I(sbi, j);
       if (decisions[j] > 0) {
         spin_lock(&curseg->active_lock);
 
         change = decisions[j];
-#if !GRID_STRIPE
-        change = change * 8;
-#endif
         // check open zone limit for a log
         if (curseg->wanted_size + change > max_wanted_size) {
-//          printk("adjust wanted size: open zone limit for a log");
           change = max_wanted_size - curseg->wanted_size;
         }
         // check global open zone limit
         if (opened + change > max_total_wanted) {
-//          printk("adjust wanted size: global open zone limit");
           change = max_total_wanted - opened;
         }
         curseg->wanted_size += change;
         opened += change;
 
         spin_unlock(&curseg->active_lock);
-      }
 
-  // decrease stripe size
-      if (decisions[j] < 0) {
+      } else if (decisions[j] < 0) {
         spin_lock(&curseg->active_lock);
         spin_lock(&curseg->inactive_lock);
 
-#if GRID_STRIPE
-        if (j < CURSEG_HOT_NODE)
-          min_wanted_size = 4;
-        else
-          min_wanted_size = 1;
-#else
-        if (j < CURSEG_HOT_NODE)
-          min_wanted_size = 32;
-        else
-          min_wanted_size = 8;
-#endif
-
         change = decisions[j] * (-1);
-#if !GRID_STRIPE
-        change = change * 8;
-#endif
+
         if (change < 0)
           change = 0;
         if (curseg->wanted_size - change < min_wanted_size) {
@@ -570,8 +531,7 @@ int f2fs_monitor_func(void *data){
       }
 
     }
-//    curseg = CURSEG_I(sbi, CURSEG_WARM_DATA);
-
+/*
     printk("opened: %u wanted: %u %u %u %u %u %u",
       opened, 
       CURSEG_I(sbi, CURSEG_HOT_DATA)->wanted_size,
@@ -581,150 +541,6 @@ int f2fs_monitor_func(void *data){
       CURSEG_I(sbi, CURSEG_WARM_NODE)->wanted_size,
       CURSEG_I(sbi, CURSEG_COLD_NODE)->wanted_size
     );
-
-/*
-    printk("%u %u %u %u %u %u %u", curseg->active_end, curseg->wanted_size,
-       curseg->inactive_start, curseg->inactive_end, curseg->cursor,
-        curseg->reclaimable_start, curseg->reclaimable_end);
-// increase stripe size
-    if (c == 10 || c == 20 || c == 40) {
-      spin_lock(&curseg->active_lock);
-
-      change = curseg->wanted_size;
-      // check open zone limit for a log
-      if (curseg->wanted_size + change > max_wanted_size) {
-        printk("adjust wanted size: open zone limit for a log");
-        change = max_wanted_size - curseg->wanted_size;
-      }
-      // check global open zone limit
-      if (opened + change > max_total_wanted) {
-        printk("adjust wanted size: global open zone limit");
-        change = max_total_wanted - opened;
-      }
-      curseg->wanted_size += change;
-      opened += change;
-
-	    spin_unlock(&curseg->active_lock);
-    }
-  // for test  
-    if (c == 40 || c == 50 || c == 60) {
-      curseg = CURSEG_I(sbi, CURSEG_WARM_DATA);
-      spin_lock(&curseg->active_lock);
-
-      change = curseg->wanted_size;
-      // check open zone limit for a log
-      if (curseg->wanted_size + change > max_wanted_size) {
-        printk("adjust wanted size: open zone limit for a log");
-        change = max_wanted_size - curseg->wanted_size;
-      }
-      // check global open zone limit
-      if (opened + change > max_total_wanted) {
-        printk("adjust wanted size: global open zone limit");
-        change = max_total_wanted - opened;
-      }
-      curseg->wanted_size += change;
-      opened += change;
-
-	    spin_unlock(&curseg->active_lock);
-    }
-
-// decrease stripe size
-    if (c == 35 && 0) {
-      spin_lock(&curseg->active_lock);
-      spin_lock(&curseg->inactive_lock);
-     
-      change = curseg->wanted_size / 2;
-      if (change < 0)
-        change = 0;
-      if (curseg->wanted_size - change < 1) {
-        change = curseg->wanted_size - 1;
-      }
-      curseg->wanted_size -= change;
-      opened -= change;
-      
-      for (i = curseg->active_end - 1;
-        i >= curseg->active_start + curseg->wanted_size; i--){
-
-        if (curseg->active_zones[i] == NULL_SEGNO) {
-          continue;
-        }
-       // skip the current cursor
-        if (i == curseg->cursor) {
-          curseg->active_end--;
-          continue; 
-        }
-        if (curseg->inactive_end > 127)
-          curseg->inactive_end = 0;
-        curseg->inactive_zones[curseg->inactive_end] = curseg->active_zones[i];
-        curseg->inactive_end++;
-        curseg->active_zones[i] = NULL_SEGNO;
-        curseg->active_end--;
-      }
-
-      spin_unlock(&curseg->inactive_lock);
-	    spin_unlock(&curseg->active_lock);
-    }
-    // move inactive to reclaim
-   
-
-    if (c==36 && 0) {
-      
-      if (curseg->inactive_start != curseg->inactive_end) {
-        spin_lock(&curseg->inactive_lock);
-        spin_lock(&curseg->reclaimable_lock);
-        while (curseg->inactive_start != curseg->inactive_end) {
-          //copy
-          if (curseg->reclaimable_end > 127)
-            curseg->reclaimable_end = 0;
-
-          curseg->reclaimable_zones[curseg->reclaimable_end] =
-            curseg->inactive_zones[curseg->inactive_start]; 
-          curseg->reclaimable_end++;
-          //remove
-          curseg->inactive_zones[curseg->inactive_start] = NULL_SEGNO;
-          curseg->inactive_start++; 
-          if (curseg->inactive_start > 127)
-            curseg->inactive_start = 0;
-
-	        printk("(%s:%d) inactive to reclaim", __func__, __LINE__);
-        }
-        spin_unlock(&curseg->reclaimable_lock);
-        spin_unlock(&curseg->inactive_lock);
-      }
-    }
-    if (curseg->reclaimable_start != curseg->reclaimable_end) {
-      while (curseg->reclaimable_start != curseg->reclaimable_end) {
-        spin_lock(&curseg->reclaimable_lock);
-	      printk("(%s:%d) reclaim zones", __func__, __LINE__);
-        segno = curseg->reclaimable_zones[curseg->reclaimable_start];
-        curseg->reclaimable_start++;
-        old_segno = segno;
-        segno = GET_SEG_FROM_SEC(sbi, GET_SEC_FROM_SEG(sbi, segno));
-        spin_unlock(&curseg->reclaimable_lock);
-
-        //change zone status into full
-        blkdev_zone_mgmt(FDEV(0).bdev, REQ_OP_ZONE_FINISH, 
-            SECTOR_FROM_BLOCK(START_BLOCK(sbi, segno)), 
-            SECTOR_FROM_BLOCK(sbi->blocks_per_blkz * SM_I(sbi)->grid_cnt),
-            GFP_NOFS);
-        
-        //update section table
-        get_sec_entry(sbi, segno)->inuse = 0;        
-	      printk("(%s:%d) reclaim zones end : %u(%u)", 
-          __func__, __LINE__, old_segno, 
-          GET_SEC_FROM_SEG(sbi, old_segno));
-      } 
-    }
-*/
-/*
-    printk("wanted: %u %u %u %u %u %u",
-      CURSEG_I(sbi, 0)->wanted_size,
-      CURSEG_I(sbi, 1)->wanted_size,
-      CURSEG_I(sbi, 2)->wanted_size,
-      CURSEG_I(sbi, 3)->wanted_size,
-      CURSEG_I(sbi, 4)->wanted_size,
-      CURSEG_I(sbi, 5)->wanted_size
-    ); 
 */
     msleep(time_ms);
   }
@@ -734,7 +550,8 @@ int f2fs_monitor_func(void *data){
 
 int f2fs_start_monitor_thread(struct f2fs_sb_info *sbi)
 {
-  sbi->f2fs_open_zones = 48 /* 6 logs * grid_cnt*/ + 16 /* reserved for meta */;
+  //sbi->f2fs_open_zones = 48 /* 6 logs * grid_cnt*/ + 16 /* reserved for meta */;
+  sbi->f2fs_open_zones = 2 /* hot/warm node */ * IG_SIZE /* grid_cnt*/ + 16 /* reserved for meta */;
   //printk("(%s : %d) start monitor thread", __func__, __LINE__);
   sbi->monitor_thread = kthread_run(f2fs_monitor_func, sbi, "f2fs_monitor"); 
 
@@ -4139,6 +3956,10 @@ static void init_sb_info(struct f2fs_sb_info *sbi)
 	sbi->log_blocks_per_seg = le32_to_cpu(raw_super->log_blocks_per_seg);
 	sbi->blocks_per_seg = 1 << sbi->log_blocks_per_seg;
 	sbi->segs_per_sec = le32_to_cpu(raw_super->segs_per_sec);
+#if SEP_SSA
+  sbi->segs_per_sec = (sbi->segs_per_sec * sbi->blocks_per_seg)
+                    / (sbi->blocks_per_seg + 1);
+#endif
 	sbi->secs_per_zone = le32_to_cpu(raw_super->secs_per_zone);
 	sbi->total_sections = le32_to_cpu(raw_super->section_count);
 	sbi->total_node_count =
