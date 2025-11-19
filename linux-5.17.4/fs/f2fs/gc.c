@@ -1795,7 +1795,7 @@ static int do_garbage_collect(struct f2fs_sb_info *sbi,
 	struct f2fs_summary_block *sum;
 	struct blk_plug plug;
 	unsigned int segno = start_segno;
-	unsigned int end_segno = start_segno + sbi->segs_per_sec;
+	unsigned int end_segno = start_segno + sbi->segs_per_sec; // sbi->segs_per_sec=1022
 	int seg_freed = 0, migrated = 0;
 	unsigned char type = IS_DATASEG(get_seg_entry(sbi, segno)->type) ?
 						SUM_TYPE_DATA : SUM_TYPE_NODE;
@@ -1825,6 +1825,7 @@ static int do_garbage_collect(struct f2fs_sb_info *sbi,
 	 * resulting in less than expected usable segments in the zone,
 	 * calculate the end segno in the zone which can be garbage collected
 	 */
+	// zone capcacity < zone size，因此重新计算 end_segno
 	if (f2fs_sb_has_blkzoned(sbi))
 		end_segno -= sbi->segs_per_sec -
 					f2fs_usable_segs_in_sec(sbi, segno);
@@ -1843,9 +1844,11 @@ static int do_garbage_collect(struct f2fs_sb_info *sbi,
 	/* reference all summary page */
 // request read IO for summary page here
 	while (segno < end_segno) {
+      	// printk("(%s:%d) gc segno: %d, end_segno: %d [by tt]", __func__, __LINE__, segno, end_segno);
 		sum_page = f2fs_get_sum_page(sbi, segno++);
 		if (IS_ERR(sum_page)) {
 			int err = PTR_ERR(sum_page);
+      		// printk("(%s:%d) gc IS_ERR(sum_page) segno: %d, end_segno: %d [by tt]", __func__, __LINE__, segno, end_segno);
 
 			end_segno = segno - 1;
 			for (segno = start_segno; segno < end_segno; segno++) {
@@ -1855,6 +1858,7 @@ static int do_garbage_collect(struct f2fs_sb_info *sbi,
 				f2fs_put_page(sum_page, 0);
 			}
 #if  DEBUG_GC
+	// �����error��־
       printk("(%s:%d) gc end with error", __func__, __LINE__);
 #endif
 			return err;
@@ -1899,7 +1903,7 @@ static int do_garbage_collect(struct f2fs_sb_info *sbi,
       head = radix_tree_lookup(root, segno);
       if (head) { 
         memcpy(sum->entries, head->entries, SUM_ENTRY_SIZE);
-        memcpy(&sum->footer, &head->footer, SUM_FOOTER_SIZE);
+    	memcpy(&sum->footer, &head->footer, SUM_FOOTER_SIZE);
       }
     }
 //    up_read(&SM_I(sbi)->ssa_ltree_slock);
@@ -1978,7 +1982,7 @@ skip:
 	stat_inc_call_count(sbi->stat_info);
       
 #if DEBUG_GC
-  printk("(%s:%d) gc end, seg_freed: %d", __func__, __LINE__, seg_freed);
+//   printk("(%s:%d) gc end, seg_freed: %d", __func__, __LINE__, seg_freed);
 #endif
   ktime_get_raw_ts64(&ts_total[1]);
   calclock(ts_total, &gcTotalTime, &gcTotalCnt);
@@ -2006,7 +2010,7 @@ int f2fs_gc(struct f2fs_sb_info *sbi, bool sync,
   unsigned long long time[6] = {0, };
   unsigned long long cnt[6] = {0, };
 #if DEBUG_GC
-  printk("(%s:%d) f2fs_gc start", __func__, __LINE__);
+//   printk("(%s:%d) f2fs_gc start", __func__, __LINE__);
 #endif
 	trace_f2fs_gc_begin(sbi->sb, sync, background,
 				get_pages(sbi, F2FS_DIRTY_NODES),
@@ -2123,7 +2127,7 @@ stop:
 
 	put_gc_inode(&gc_list);
 #if DEBUG_GC
-  printk("(%s:%d) f2fs_gc end, sec_freed %d", __func__, __LINE__, sec_freed);
+//   printk("(%s:%d) f2fs_gc end, sec_freed %d", __func__, __LINE__, sec_freed);
 #endif
   ktime_get_raw_ts64(&ts_f2fs_gc[2][1]);
   calclock(ts_f2fs_gc[2], &time[2], &cnt[2]);

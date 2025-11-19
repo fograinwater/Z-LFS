@@ -1162,7 +1162,7 @@ static_assert(sizeof(struct f2fs_nat_block) == 4095, "");
 	 >> SIT_VBLOCKS_SHIFT)
 
 struct f2fs_sit_entry {
-	__le16 vblocks;				/* reference above */
+	__le16 vblocks;				/* reference above 有效数据块的个数*/
 	__u8 valid_map[SIT_VBLOCK_MAP_SIZE];	/* bitmap for valid blocks */
 	__le64 mtime;				/* segment age for cleaning */
 } __attribute__((packed));
@@ -1261,7 +1261,7 @@ struct nat_journal {
 static_assert(sizeof(struct nat_journal) == 505, "");
 
 struct sit_journal_entry {
-	__le32 segno;
+	__le32 segno; // 指向的segment号
 	struct f2fs_sit_entry se;
 } __attribute__((packed));
 

@@ -600,6 +600,7 @@ int f2fs_try_to_free_nats(struct f2fs_sb_info *sbi, int nr_shrink)
 	return nr - nr_shrink;
 }
 
+// 将得到的node信息放入到参数 node_info *ni 中
 int f2fs_get_node_info(struct f2fs_sb_info *sbi, nid_t nid,
 				struct node_info *ni, bool checkpoint_context)
 {
@@ -801,6 +802,9 @@ pgoff_t f2fs_get_next_page_offset(struct dnode_of_data *dn, pgoff_t pgofs)
  * The maximum depth is four.
  * Offset[0] will have raw inode offset.
  */
+// 根据文件偏移量计算出所属的级别
+// offset[] 是“在这一层 node 里的第几个指针”；
+// noffset[] 表示逻辑上的 node address 空间编号（在整个 inode 的地址命名空间中的顺序号）【相对起始inode的node id】
 static int get_node_path(struct inode *inode, long block,
 				int offset[4], unsigned int noffset[4])
 {
@@ -880,6 +884,9 @@ got:
  * Also, it should grab and release a rwsem by calling f2fs_lock_op() and
  * f2fs_unlock_op() only if mode is set with ALLOC_NODE.
  */
+// 从 inode 出发，沿着 node tree（直接、间接、多级索引）
+// 找到指定逻辑页的 data block 所在的 node page，并返回相关信息。
+// 在找的过程中，会将路径上的node page都加载到内存(page cache)中
 int f2fs_get_dnode_of_data(struct dnode_of_data *dn, pgoff_t index, int mode)
 {
 	struct f2fs_sb_info *sbi = F2FS_I_SB(dn->inode);
@@ -891,6 +898,7 @@ int f2fs_get_dnode_of_data(struct dnode_of_data *dn, pgoff_t index, int mode)
 	int level, i = 0;
 	int err = 0;
 
+	// 根据文件偏移量计算出是在哪一级间接节点
 	level = get_node_path(dn->inode, index, offset, noffset);
 	if (level < 0)
 		return level;
@@ -898,12 +906,16 @@ int f2fs_get_dnode_of_data(struct dnode_of_data *dn, pgoff_t index, int mode)
 	nids[0] = dn->inode->i_ino;
 	npage[0] = dn->inode_page;
 
+	// 如果当前（第一级）ino的node page还没有被加载，就去加载它
+	// 也就是加载inode所在的node page
+	// 这个node page包含了直接索引和一级间接索引
 	if (!npage[0]) {
 		npage[0] = f2fs_get_node_page(sbi, nids[0]);
 		if (IS_ERR(npage[0]))
 			return PTR_ERR(npage[0]);
 	}
 
+	// 如果文件启用了 inline_data，且 index > 0，说明请求的数据不在单独的 block 中
 	/* if inline_data is set, should not report any block indices */
 	if (f2fs_has_inline_data(dn->inode) && index) {
 		err = -ENOENT;
@@ -922,6 +934,7 @@ int f2fs_get_dnode_of_data(struct dnode_of_data *dn, pgoff_t index, int mode)
 		bool done = false;
 
 		if (!nids[i] && mode == ALLOC_NODE) {
+			// 如果该层的 nid 为空，且允许分配，就新建 node
 			/* alloc new node */
 			if (!f2fs_alloc_nid(sbi, &(nids[i]))) {
 				err = -ENOSPC;
@@ -929,6 +942,7 @@ int f2fs_get_dnode_of_data(struct dnode_of_data *dn, pgoff_t index, int mode)
 			}
 
 			dn->nid = nids[i];
+			// 创建node page cache
 			npage[i] = f2fs_new_node_page(dn, noffset[i]);
 			if (IS_ERR(npage[i])) {
 				f2fs_alloc_nid_failed(sbi, nids[i]);
@@ -2975,6 +2989,8 @@ int f2fs_restore_node_summary(struct f2fs_sb_info *sbi,
 }
 
 #if !META_FOR_ZNS
+// nat journal => nat cache
+// 将日志中的 NAT 条目转移到 NAT 缓存中，并标记为脏，为后续刷写到 NAT 区域做准备
 static void remove_nats_in_journal(struct f2fs_sb_info *sbi)
 {
 	struct f2fs_nm_info *nm_i = NM_I(sbi);
@@ -3117,13 +3133,13 @@ static void insert_nat_log_tree(struct f2fs_sb_info *sbi,
 
 	struct nat_entry *new;
 	
-	//printk("(%s : %d) insert nat entry of nid :%u", __func__, __LINE__, nat_get_nid(ne));
+	// printk("(%s : %d) insert nat entry of nid :%u", __func__, __LINE__, nat_get_nid(ne));
 	new = __alloc_nat_entry(sbi, nat_get_nid(ne), true);
 	copy_node_info(&new->ni, &ne->ni);
 	
 	//no lookup log tree 
 	__insert_nat_log_set(NM_I(sbi), new);
-	//printk("(%s : %d) insert nat entry of nid :%u", __func__, __LINE__, nat_get_nid(ne));
+	// printk("[insert_nat_log_tree()] (%s : %d) insert nat entry of nid :%u", __func__, __LINE__, nat_get_nid(ne));
 }
 
 static inline void clean_nat_log_set(struct f2fs_sb_info *sbi,
@@ -3376,6 +3392,7 @@ static int __flush_nat_entry_set(struct f2fs_sb_info *sbi,
 				}
 				f2fs_put_page(page, 0);
 
+			// 如果当前的log放不下，则分配一个
 			if (!has_curlog_space(sbi, 1, NAT_LOG))	{
 				// prepare merge
 				printk("(%s:%d) set merge flag", __func__, __LINE__);
@@ -3387,8 +3404,8 @@ static int __flush_nat_entry_set(struct f2fs_sb_info *sbi,
 				//set_ckpt_flags(sbi, CP_NAT_MERGE_FLAG);
 				// switch log tree;
 				cpc->merge = cpc->merge | 0x2;
-				NM_I(sbi)->cur_nat_log ^= 0x1;
-				NM_I(sbi)->nat_blks_in_log = 0;
+				NM_I(sbi)->cur_nat_log ^= 0x1; 	// 切换log zone，反复用那两个log
+				NM_I(sbi)->nat_blks_in_log = 0; // 当前log中的entry数置为0
 				printk("(%s:%d) nat merge done", __func__, __LINE__);
 			}
 

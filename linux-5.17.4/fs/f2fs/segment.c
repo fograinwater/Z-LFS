@@ -1892,9 +1892,12 @@ static int __f2fs_issue_discard_zone(struct f2fs_sb_info *sbi,
 
 		if (sector & (bdev_zone_sectors(bdev) - 1) ||
 				nr_sects != bdev_zone_sectors(bdev)) {
-			f2fs_err(sbi, "(%d) %s: Unaligned zone reset attempted (block %x + %x)",
+			// f2fs_err(sbi, "(%d) %s: Unaligned zone reset attempted (block %x + %x)",
+			// 	 devi, sbi->s_ndevs ? FDEV(devi).path : "",
+			// 	 blkstart, blklen);
+			f2fs_err(sbi, "(%d) %s: Unaligned zone reset attempted (blkstart %x(%u) + blklen %x(%u)). Report sector: %llu, nr_sects: %llu",
 				 devi, sbi->s_ndevs ? FDEV(devi).path : "",
-				 blkstart, blklen);
+				 blkstart, blkstart, blklen, blklen, sector, nr_sects);
 			return -EIO;
 		}
 		trace_f2fs_issue_reset_zone(bdev, blkstart);
@@ -1943,6 +1946,7 @@ static int f2fs_issue_discard(struct f2fs_sb_info *sbi,
 				f2fs_target_device(sbi, i, NULL);
 
 			if (bdev2 != bdev) {
+				// f2fs_info(sbi, "(f2fs_issue_discard :1949) start: %llu, len: %llu", start, len);
 				err = __issue_discard_async(sbi, bdev,
 						start, len);
 				if (err)
@@ -1963,6 +1967,7 @@ static int f2fs_issue_discard(struct f2fs_sb_info *sbi,
 #endif
 	}
 
+	// f2fs_info(sbi, "(f2fs_issue_discard :1970) start: %llu, len: %llu, blkstart: %u, blklen: %u", start, len, blkstart, blklen);
 	if (len)
 		err = __issue_discard_async(sbi, bdev, start, len);
 	return err;
@@ -2126,8 +2131,11 @@ next:
 			    sbi->blocks_per_blkz);
       }
 #else
+			// 【251017BUG定位】在开启SEP_SSA时，这里传入的blklen有误，因为sbi->segs_per_sec在init_sb_info中被修改过了
+			// f2fs_issue_discard(sbi, START_BLOCK(sbi, start_segno),
+			// 	sbi->segs_per_sec << sbi->log_blocks_per_seg);
 			f2fs_issue_discard(sbi, START_BLOCK(sbi, start_segno),
-				sbi->segs_per_sec << sbi->log_blocks_per_seg);
+				sbi->blocks_per_blkz);
 #endif
     }
 		start = start_segno + sbi->segs_per_sec;
@@ -2515,6 +2523,7 @@ struct page *f2fs_get_sum_page(struct f2fs_sb_info *sbi, unsigned int segno)
 {
 	if (unlikely(f2fs_cp_error(sbi)))
 		return ERR_PTR(-EIO);
+    // printk("(%s:%d) gc f2fs_get_sum_page segno: %d, GET_SUM_BLOCK(sbi, segno): %u [by tt]", __func__, __LINE__, segno, GET_SUM_BLOCK(sbi, segno));
 	return f2fs_get_meta_page_retry(sbi, GET_SUM_BLOCK(sbi, segno));
 }
 
@@ -2524,12 +2533,13 @@ void f2fs_update_meta_page(struct f2fs_sb_info *sbi,
 {
 	struct page *page = f2fs_grab_meta_page(sbi, blk_addr);
 	//printk("(%s : %d) addr : %u", __func__, __LINE__, blk_addr);
-	memcpy(page_address(page), src, PAGE_SIZE);
+	memcpy(page_address(page), src, PAGE_SIZE); // memcpy(dest, src, size)
 	set_page_dirty(page);
 	f2fs_put_page(page, 1);
 }
 
 #if META_FOR_ZNS
+// 将ssa_set插入到内存中的cache缓存中，以radix tree的形式存储
 static void insert_ssa_log(struct f2fs_sb_info *sbi, unsigned int segno,
 		struct f2fs_summary_block *sum_blk){
 	struct ssa_set *head;
@@ -2915,6 +2925,7 @@ static void new_curseg(struct f2fs_sb_info *sbi, int type, bool new_sec)
 #if META_FOR_ZNS
 		insert_ssa_log(sbi, segno, curseg->sum_blk);
 #endif
+		// printk("(%s:%d) allocate newseg's sum page for segno: %u, type: %d, GET_SUM_BLOCK(sbi, segno):%u [by tt]", __func__, __LINE__, segno, type, GET_SUM_BLOCK(sbi, segno));
 		write_sum_page(sbi, curseg->sum_blk,
 				GET_SUM_BLOCK(sbi, segno));
 	}
@@ -3201,7 +3212,7 @@ static void new_curseg_striped(struct f2fs_sb_info *sbi,
 #if ZF2FS_MONITOR & GRID_STRIPE
       sbi->f2fs_open_zones += SM_I(sbi)->grid_cnt;
 #else
-      sbi->f2fs_open_zones += 1;
+    //   sbi->f2fs_open_zones += 1;
 #endif
 //      printk("f2fs_open zones %d", sbi->f2fs_open_zones);
     }
@@ -4266,6 +4277,7 @@ static void do_write_page(struct f2fs_summary *sum, struct f2fs_io_info *fio)
   segno = CURSEG_I(sbi, type)->segno;
 #endif
 reallocate:
+	// 分配一个data block，设置new_blkaddr的值
 	f2fs_allocate_data_block(fio->sbi, fio->page, fio->old_blkaddr,
 			&fio->new_blkaddr, sum, type, fio);
 	if (GET_SEGNO(fio->sbi, fio->old_blkaddr) != NULL_SEGNO) {
@@ -4290,6 +4302,8 @@ reallocate:
     };
 
     sum_blkaddr = get_sum_block_addr(sbi, segno); 
+	// printk("(%s:%d) submit sum page for segno %u, sum_blkaddr: %u [by tt]\n",
+		// __func__, __LINE__, segno, sum_blkaddr);
     page = f2fs_grab_meta_page(sbi, sum_blkaddr);
 
     init_sum_fio(sbi, &sum_fio, page, fio);
@@ -4348,7 +4362,7 @@ void f2fs_do_write_node_page(unsigned int nid, struct f2fs_io_info *fio)
 {
 	struct f2fs_summary sum;
 
-	set_summary(&sum, nid, 0, 0);
+	set_summary(&sum, nid, 0, 0); // 只包含一个block的summary
 	do_write_page(&sum, fio);
 	f2fs_update_iostat(fio->sbi, fio->io_type, F2FS_BLKSIZE);
 }
@@ -5016,7 +5030,7 @@ static void add_sits_in_set(struct f2fs_sb_info *sbi)
 int __flush_sum_blks(struct f2fs_sb_info *sbi){
 	struct f2fs_sm_info *sm_i = SM_I(sbi);
 	struct address_space *mapping = META_MAPPING(sbi);
-	struct pagevec pvec;
+	struct pagevec pvec; // page的批量缓冲器
 	long nwritten = 0;
 	int ret = 0;
 	pgoff_t index, end;
@@ -6221,6 +6235,7 @@ static int build_sit_info(struct f2fs_sb_info *sbi)
 	/* init SIT information */
 	sit_i->s_ops = &default_salloc_ops;
 #if STRIPE
+	// 如果开启STRIPE，分配segment的函数就变了
 	sit_i->s_ops = &stripe_salloc_ops;
 #endif
 	sit_i->sit_base_addr = le32_to_cpu(raw_super->sit_blkaddr);
@@ -6852,13 +6867,21 @@ int f2fs_check_write_pointer(struct f2fs_sb_info *sbi)
 {
 	int i, ret;
 	struct check_zone_write_pointer_args args;
+	pr_info("[f2fs_check_write_pointer]: ttt111\n");
+
+	pr_info("[f2fs_check_write_pointer]: sbi->s_ndevs: %d, ttt222\n", sbi->s_ndevs);
 
 	for (i = 0; i < sbi->s_ndevs; i++) {
-		if (!bdev_is_zoned(FDEV(i).bdev))
+		if (!bdev_is_zoned(FDEV(i).bdev)) 
 			continue;
-
+		pr_info("[f2fs_check_write_pointer]: ttt333\n");
+		
 		args.sbi = sbi;
+		pr_info("[f2fs_check_write_pointer]: ttt444\n");
+
 		args.fdev = &FDEV(i);
+		pr_info("[f2fs_check_write_pointer]: FDEV(i).nr_blkz: %u, FDEV(i).total_segments: %u, ttt555\n", FDEV(i).nr_blkz, FDEV(i).total_segments);
+
 		ret = blkdev_report_zones(FDEV(i).bdev, 0, BLK_ALL_ZONES,
 					  check_zone_write_pointer_cb, &args);
 		if (ret < 0)
@@ -6876,10 +6899,12 @@ static bool is_conv_zone(struct f2fs_sb_info *sbi, unsigned int zone_idx,
 	return !test_bit(zone_idx, FDEV(dev_idx).blkz_seq);
 }
 /* Return the zone index in the given device */
+// Return the segment's zone index in the device
 static unsigned int get_zone_idx(struct f2fs_sb_info *sbi, unsigned int secno,
 					int dev_idx)
 {
 	block_t sec_start_blkaddr = START_BLOCK(sbi, GET_SEG_FROM_SEC(sbi, secno));
+
 	return (sec_start_blkaddr - FDEV(dev_idx).start_blk) >>
 						sbi->log_blocks_per_blkz;
 }
@@ -6899,6 +6924,7 @@ static inline unsigned int f2fs_usable_zone_segs_in_sec(
 #endif
 
 	dev_idx = f2fs_target_device_index(sbi, START_BLOCK(sbi, segno));
+	// get the segment's zone index in the device
 	zone_idx = get_zone_idx(sbi, GET_SEC_FROM_SEG(sbi, segno), dev_idx);
 
 	/* Conventional zone's capacity is always equal to zone size */
@@ -6915,8 +6941,13 @@ static inline unsigned int f2fs_usable_zone_segs_in_sec(
 #if SEP_SSA
   usable_segs =	FDEV(dev_idx).zone_capacity_blocks[zone_idx];
   usable_segs *= SM_I(sbi)->grid_cnt;
-  usable_segs /= (sbi->blocks_per_seg + 1);
-  usable_segs += 1;
+  usable_segs /= (sbi->blocks_per_seg + 1); // 275712 / (512 + 1) = 537
+  usable_segs += 1; // 最后一个segment虽然构不成一个完整的segment，，但是其中部分是可以使用的
+  // pr_info输出: segno=387774, blocks_per_seg=512, usable_segs=538, SM_I(sbi)->grid_cnt=1.
+  // 538 * 2 = 1076
+	// pr_info("F2FS-ZONE [f2fs_usable_zone_segs_in_sec]: segno=%u, blocks_per_seg=%u, usable_segs=%u, SM_I(sbi)->grid_cnt=%u.  -_-,tt =_=\n",
+    //     segno, sbi->blocks_per_seg, usable_segs, SM_I(sbi)->grid_cnt);
+ // usable_segs = 538
   return usable_segs;
 #else // SEP_SSA
 	/* Get the segment count beyond zone capacity block */
@@ -6937,6 +6968,107 @@ static inline unsigned int f2fs_usable_zone_segs_in_sec(
  * zone capacity, the number of usable blocks up to the zone capacity
  * is returned. 0 is returned in all other cases.
  */
+//  /* --------- 插桩：在 f2fs_usable_zone_blks_in_seg 内打印关键状态 --------- */
+// static inline unsigned int f2fs_usable_zone_blks_in_seg(
+// 			struct f2fs_sb_info *sbi, unsigned int segno)
+// {
+
+// 	pr_info("F2FS-ZONE: segno=%u, blocks_per_seg=%u, usable_segs_in_sec=%u===tttttt\n",
+//         segno, sbi->blocks_per_seg, SM_I(sbi)->usable_segs_in_sec);
+
+// 	pr_info("F2FS-ZONE: blocks_per_seg=%u grid_cnt=%u -> BLKS_PER_SUBSEG=%u===tttttt\n",
+// 			sbi->blocks_per_seg, SM_I(sbi)->grid_cnt,
+// 			BLKS_PER_SUBSEG(sbi));
+// 	/* 一次性打印，避免大量日志 */
+// 	block_t seg_start;
+// 	unsigned int zone_idx, dev_idx, secno;
+// 	static bool printed_once = false;
+// 	pr_info("F2FS-ZONE: -1\n");
+// #if SEP_SSA
+//   block_t cap_blks, usable_blks;
+// #else
+//   block_t sec_start_blkaddr, sec_cap_blkaddr;
+// #endif
+// 	pr_info("F2FS-ZONE: 0\n");
+// 	secno = GET_SEC_FROM_SEG(sbi, segno);
+// 	pr_info("F2FS-ZONE: 1\n");
+// 	seg_start = START_BLOCK(sbi, segno);
+// 	pr_info("F2FS-ZONE: 2\n");
+// 	dev_idx = f2fs_target_device_index(sbi, seg_start);
+// 	pr_info("F2FS-ZONE: 3\n");
+// 	zone_idx = get_zone_idx(sbi, secno, dev_idx);
+
+// 	pr_info("F2FS-ZONE: segno=%u, dev=%u, zone_idx=%u, zone_capacity=%u===tttttt\n",
+//         segno, dev_idx, zone_idx,
+//         FDEV(dev_idx).zone_capacity_blocks ?
+//         FDEV(dev_idx).zone_capacity_blocks[zone_idx] : 0);
+
+// 	/* 一次性打印内核是否编译了 zoned 支持 与 当前 sb 的 zoned 标志状态 */
+// 	if (!printed_once) {
+// 		pr_info("F2FS-ZONE: entering f2fs_usable_zone_blks_in_seg: segno=%u, dev_idx=%u, zone_idx=%u\n",
+// 			segno, dev_idx, zone_idx);
+// 		pr_info("F2FS-ZONE: sbi->blocks_per_seg=%u, sbi->blocks_per_blkz=%u, SM_I(sbi)->grid_cnt=%u\n",
+// 			sbi->blocks_per_seg, sbi->blocks_per_blkz,
+// #if defined(CONFIG_BLK_DEV_ZONED)
+// 			SM_I(sbi)->grid_cnt
+// #else
+// 			0
+// #endif
+// 		);
+// 		printed_once = true;
+// 	}
+
+// 	/* Conventional zone's capacity ... */
+// 	if (is_conv_zone(sbi, zone_idx, dev_idx)) {
+// 		pr_info("F2FS-ZONE: segno=%u is conventional zone -> return blocks_per_seg=%u\n",
+// 			segno, sbi->blocks_per_seg);
+// 		return sbi->blocks_per_seg;
+// 	}
+
+// 	if (!FDEV(dev_idx).zone_capacity_blocks) {
+// 		pr_info("F2FS-ZONE: dev %u has no zone_capacity_blocks -> return blocks_per_seg=%u\n",
+// 			dev_idx, sbi->blocks_per_seg);
+// 		return sbi->blocks_per_seg;
+// 	}
+
+// #if SEP_SSA
+//   if (GET_SEG_OFFSET_IN_SEC(sbi, segno) >= SM_I(sbi)->usable_segs_in_sec) {
+//     pr_info("F2FS-ZONE: segno=%u offset >= usable_segs_in_sec -> return 0\n", segno);
+//     return 0;
+//   }
+//   if (IS_LAST_SEG(sbi, segno)) {
+//     cap_blks = FDEV(dev_idx).zone_capacity_blocks[zone_idx];
+//     cap_blks *= SM_I(sbi)->grid_cnt;
+//     usable_blks = (cap_blks - (SM_I(sbi)->usable_segs_in_sec - 1) *
+//        (sbi->blocks_per_seg + 1)) - 1;
+//     pr_info("F2FS-ZONE: segno=%u is last seg -> cap_blks=%llu usable_blks=%llu\n",
+//             segno, (unsigned long long)cap_blks, (unsigned long long)usable_blks);
+//     return (unsigned int)usable_blks;
+//   }
+// #else
+// 	sec_start_blkaddr = START_BLOCK(sbi, GET_SEG_FROM_SEC(sbi, secno));
+// 	sec_cap_blkaddr = sec_start_blkaddr +
+// 				FDEV(dev_idx).zone_capacity_blocks[zone_idx];
+
+// 	if (seg_start >= sec_cap_blkaddr) {
+// 		pr_info("F2FS-ZONE: segno=%u start >= sec_cap_blkaddr -> return 0\n",
+// 			segno);
+//     	return 0;
+// 	}
+//   if (seg_start + BLKS_PER_SUBSEG(sbi) > sec_cap_blkaddr) {
+//     unsigned int ret = ((sec_cap_blkaddr - seg_start) * SM_I(sbi)->grid_cnt);
+//     pr_info("F2FS-ZONE: segno=%u partial seg -> sec_cap_blkaddr=%llu seg_start=%llu ret=%u\n",
+//             segno,
+//             (unsigned long long)sec_cap_blkaddr,
+//             (unsigned long long)seg_start,
+//             ret);
+//     return ret;
+//   }
+// #endif
+// 	pr_info("F2FS-ZONE: segno=%u fully inside -> return blocks_per_seg=%u\n",
+// 		segno, sbi->blocks_per_seg);
+// 	return sbi->blocks_per_seg;
+// }
 static inline unsigned int f2fs_usable_zone_blks_in_seg(
 			struct f2fs_sb_info *sbi, unsigned int segno)
 {
@@ -6967,9 +7099,11 @@ static inline unsigned int f2fs_usable_zone_blks_in_seg(
         >= SM_I(sbi)->usable_segs_in_sec) {
     return 0;
   }
+  // 最后一个segment需要特殊处理，它只有部分空间是可用的
   if (IS_LAST_SEG(sbi, segno)) {
     cap_blks = FDEV(dev_idx).zone_capacity_blocks[zone_idx]; 
     cap_blks *= SM_I(sbi)->grid_cnt;
+	// usable_blks = 275712 - 537 * 513 - 1 = 275712 - 275481 - 1 = 230
     usable_blks = (cap_blks - (SM_I(sbi)->usable_segs_in_sec - 1) /* # of complete segment */ *
        (sbi->blocks_per_seg + 1)) - 1 /* one last summary block */;
 
@@ -6993,9 +7127,10 @@ static inline unsigned int f2fs_usable_zone_blks_in_seg(
 #endif
 	return sbi->blocks_per_seg;
 }
-#else // CONFIG_BLK_ZONED
+#else // CONFIG_BLK_ZONED ==> CONFIG_BLK_DEV_ZONED
 int f2fs_fix_curseg_write_pointer(struct f2fs_sb_info *sbi)
 {
+	pr_info("F2FS-ZONE: CONFIG_BLK_DEV_ZONED not compiled - stub called for segno=%u -> return 0\n", segno);
 	return 0;
 }
 
@@ -7007,6 +7142,8 @@ int f2fs_check_write_pointer(struct f2fs_sb_info *sbi)
 static inline unsigned int f2fs_usable_zone_blks_in_seg(struct f2fs_sb_info *sbi,
 							unsigned int segno)
 {
+	pr_info("F2FS-ZONE: segno=%u, blocks_per_seg=%u, usable_segs_in_sec=%u==0000t\n",
+        segno, sbi->blocks_per_seg, SM_I(sbi)->usable_segs_in_sec);
 	return 0;
 }
 
@@ -7139,6 +7276,9 @@ int f2fs_build_segment_manager(struct f2fs_sb_info *sbi)
       sm_info->free_sz_cnt[i] += 1; 
     }
   }
+#else
+// 如果不设置的话，grid_cnt=0，在get_segno_from_seg0中会出现除0错误
+sm_info->grid_cnt = 1;
 #endif //STRIPE
 #if SEP_SSA
   sm_info->usable_segs_in_sec = f2fs_usable_zone_segs_in_sec(sbi, 0);

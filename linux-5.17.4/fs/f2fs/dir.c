@@ -342,13 +342,18 @@ static struct f2fs_dir_entry *find_in_level(struct inode *dir,
 	bool room = false;
 	int max_slots;
 
+	// 确定fname在该level的哪个bucket
 	nbucket = dir_buckets(level, F2FS_I(dir)->i_dir_level);
+	// 该level中的bucket有多少个block
 	nblock = bucket_blocks(level);
 
+	// 该bucket的起始block index
 	bidx = dir_block_index(level, F2FS_I(dir)->i_dir_level,
 			       le32_to_cpu(fname->hash) % nbucket);
+	// 该bucket的结束block index
 	end_block = bidx + nblock;
 
+	// 遍历这个bucket的所有block
 	for (; bidx < end_block; bidx++) {
 		/* no need to allocate new dentry pages to all the indices */
 		dentry_page = f2fs_find_data_page(dir, bidx);
@@ -362,6 +367,7 @@ static struct f2fs_dir_entry *find_in_level(struct inode *dir,
 			}
 		}
 
+		// 在该 dentry_page 中查找 fname
 		de = find_in_block(dir, dentry_page, fname, &max_slots);
 		if (IS_ERR(de)) {
 			*res_page = ERR_CAST(de);
@@ -412,6 +418,7 @@ struct f2fs_dir_entry *__f2fs_find_entry(struct inode *dir,
 		f2fs_i_depth_write(dir, max_depth);
 	}
 
+	// 在多级哈希目录树中查找 fname
 	for (level = 0; level < max_depth; level++) {
 		de = find_in_level(dir, level, fname, res_page);
 		if (de || IS_ERR(*res_page))

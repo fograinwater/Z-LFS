@@ -214,15 +214,21 @@ static inline pgoff_t current_nat_addr(struct f2fs_sb_info *sbi, nid_t start)
 
 	/*
 	 * block_off = segment_off * 512 + off_in_segment
-	 * OLD = (segment_off * 512) * 2 + off_in_segment
-	 * NEW = 2 * (segment_off * 512 + off_in_segment) - off_in_segment
+	 * OLD = (segment_off * 512) * 2 + off_in_segment => 2 * segment_off * 512 + off_in_segment
+	 * NEW = 2 * (segment_off * 512 + off_in_segment) - off_in_segment => 2 * segment_off * 512 + 2 * off_in_segment - off_in_segment
+	 * => 2 * segment_off * 512 + off_in_segment
 	 */
+	// 为了保障一致性，一个 逻辑 NAT block（block_off） 需要有两个物理副本（OLD / NEW）。
+	// 要求同一个逻辑 NAT block 的两个副本：必须位于 两个相邻的 segment，
+	// 同时在两个 segment 中的 偏移位置一致。
 	block_off = NAT_BLOCK_OFFSET(start);
 
+	// 计算出该node block在NAT区域的物理块地址[version1]
 	block_addr = (pgoff_t)(nm_i->nat_blkaddr +
 		(block_off << 1) -
 		(block_off & (sbi->blocks_per_seg - 1)));
 
+	// 如果 bitmap 有标记，就把 block_addr 往后跳segment得到[version2]
 	if (f2fs_test_bit(block_off, nm_i->nat_bitmap))
 		block_addr += sbi->blocks_per_seg;
 

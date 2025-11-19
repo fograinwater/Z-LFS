@@ -19,6 +19,7 @@
 #define F2FS_MIN_META_SEGMENTS	8 /* SB + 2 (CP + SIT + NAT) + SSA */
 
 /* L: Logical segment # in volume, R: Relative segment # in main area */
+// (free_i)->start_segno是main area的起始segno
 #define GET_L2R_SEGNO(free_i, segno)	((segno) - (free_i)->start_segno)
 #define GET_R2L_SEGNO(free_i, segno)	((segno) + (free_i)->start_segno)
 
@@ -63,9 +64,11 @@ static inline void sanity_check_seg_type(struct f2fs_sb_info *sbi,
 	 ((secno) == CURSEG_I(sbi, CURSEG_ALL_DATA_ATGC)->segno /	\
 	  (sbi)->segs_per_sec))
 
+// main_blkaddr是main area的起始物理地址
 #define MAIN_BLKADDR(sbi)						\
 	(SM_I(sbi) ? SM_I(sbi)->main_blkaddr : 				\
 		le32_to_cpu(F2FS_RAW_SUPER(sbi)->main_blkaddr))
+// segment0_blkaddr是整个f2fs的起始物理地址
 #define SEG0_BLKADDR(sbi)						\
 	(SM_I(sbi) ? SM_I(sbi)->seg0_blkaddr : 				\
 		le32_to_cpu(F2FS_RAW_SUPER(sbi)->segment0_blkaddr))
@@ -96,7 +99,9 @@ static inline void sanity_check_seg_type(struct f2fs_sb_info *sbi,
 
 #define GET_SEGOFF_FROM_SEG0(sbi, blk_addr)	((blk_addr) - SEG0_BLKADDR(sbi))
 
+// 如果没有开启GRID_STRIPE，则和原版f2fs一样
 #if !GRID_STRIPE
+/*
 #define START_BLOCK(sbi, segno)	(SEG0_BLKADDR(sbi) +			\
 	 (GET_R2L_SEGNO(FREE_I(sbi), segno) << (sbi)->log_blocks_per_seg))
 
@@ -107,7 +112,7 @@ static inline void sanity_check_seg_type(struct f2fs_sb_info *sbi,
 	(GET_SEGOFF_FROM_SEG0(sbi, blk_addr) >> (sbi)->log_blocks_per_seg)
 #define GET_BLKOFF_FROM_SEG0(sbi, blk_addr)				\
 	(GET_SEGOFF_FROM_SEG0(sbi, blk_addr) & ((sbi)->blocks_per_seg - 1))
-
+*/
 #endif // !GRID_STRIPE
 
 #define GET_SUM_TYPE(footer) ((footer)->entry_type)
@@ -362,7 +367,7 @@ struct ssa_set {
 	struct list_head set_list;
 	unsigned int segno;
 	unsigned long long cp_ver; 
-	struct f2fs_summary entries[ENTRIES_IN_SUM];
+	struct f2fs_summary entries[ENTRIES_IN_SUM];	// ENTRIES_IN_SUM = 512
 	struct summary_footer footer;
 };
 #endif
@@ -783,6 +788,7 @@ static inline int check_block_count(struct f2fs_sb_info *sbi,
 #if SEP_SSA
   // unit of find_next_zero_bit_le
   size_t unit = sizeof(const unsigned long);
+  // 做对齐处理
   if(usable_blks_per_seg % (unit)){
     usable_blks_per_seg = round_up(usable_blks_per_seg, unit);
   }
@@ -1018,10 +1024,18 @@ wake_up:
 	wake_up_interruptible_all(&dcc->discard_wait_queue);
 }
 
-#if GRID_STRIPE
-
+// 每个subsegment中的block数量
 #define BLKS_PER_SUBSEG(sbi) (SM_I(sbi)->grid_cnt? \
   ((sbi)->blocks_per_seg / SM_I(sbi)->grid_cnt) : (sbi)->blocks_per_seg)
+
+
+#if GRID_STRIPE
+
+/*
+// 每个subsegment中的block数量
+#define BLKS_PER_SUBSEG(sbi) (SM_I(sbi)->grid_cnt? \
+  ((sbi)->blocks_per_seg / SM_I(sbi)->grid_cnt) : (sbi)->blocks_per_seg)
+*/
 
 /*
  * segno -> blkaddr:
@@ -1029,7 +1043,7 @@ wake_up:
  * secno = segno / segs_per_sec
  * start_blkaddr_of_sec = secno * blocks_per_sec
  *
- * segoff_in_sec = segno / segs_per_sec
+ * segoff_in_sec = segno / segs_per_sec => 应该是segno % segs_per_sec 
  * seg_blkoff_in_sec = segoff_in_sec * blocks_per_subseg
  * 
  * start_block = seg0_blkaddr + start_blkaddr_of_sec + seg_blkoff_in_sec 
@@ -1043,6 +1057,9 @@ static inline unsigned int START_BLOCK(struct f2fs_sb_info *sbi,
   unsigned int secno, segoff_in_sec;
 
   if((SM_I(sbi)->grid_cnt) < 2) {
+	// pr_info("F2FS-ZONE: blocks_per_seg=%u grid_cnt=%u -> BLKS_PER_SUBSEG=%u===tttttt[START_BLOCK1111()]\n",
+	// 	sbi->blocks_per_seg, SM_I(sbi)->grid_cnt,
+	// 	BLKS_PER_SUBSEG(sbi));
     start_addr = SEG0_BLKADDR(sbi);
     start_addr += (GET_R2L_SEGNO(FREE_I(sbi), segno) << (sbi)->log_blocks_per_seg);
     return start_addr;
@@ -1186,6 +1203,7 @@ static inline unsigned int get_segno_from_sum_addr(struct f2fs_sb_info *sbi, blo
 #if SEP_SSA
 // segno and secno must be valid
 // segno -> seg_offset in section
+// 获取在section中的segment number
 #define GET_SEG_OFFSET_IN_SEC(sbi, segno) \
   (segno - (GET_SEC_FROM_SEG(sbi, segno) * (sbi->segs_per_sec)))
 #define GET_LAST_SEGNO(sbi, secno) \
@@ -1198,51 +1216,59 @@ static inline unsigned int virt_to_logical_in_sec(struct f2fs_sb_info * sbi, blo
   block_t blkaddr;
 
   unsigned int zone_offset_in_sec = (viraddr / BLKS_PER_SUBSEG(sbi))
-    % SM_I(sbi)->grid_cnt;
+    % SM_I(sbi)->grid_cnt; // 如果grid_cnt = 1, zone_offset_in_sec = 0
 
-  unsigned int subseg_offset_in_zone = (viraddr / sbi->blocks_per_seg);
-  unsigned blk_offset_in_subseg = viraddr % BLKS_PER_SUBSEG(sbi);
+  unsigned int subseg_offset_in_zone = (viraddr / sbi->blocks_per_seg); // segment offset in section
+  unsigned blk_offset_in_subseg = viraddr % BLKS_PER_SUBSEG(sbi);	// block offset in segment
 
   blkaddr = zone_offset_in_sec * sbi->blocks_per_blkz
           + subseg_offset_in_zone * BLKS_PER_SUBSEG(sbi)
           + blk_offset_in_subseg;
 
+  // 在ZN540上也可以直接返回viraddr
   return blkaddr;
 }
 
+// 当前segment在所在section的块偏移 segment's block offset in section
 #define SEG_TO_VIRADDR(sbi, segno) \
   (GET_SEG_OFFSET_IN_SEC(sbi, segno) * (sbi->blocks_per_seg + 1))
 #define SEC_SIZE_BLKS(sbi) \
   ((sbi->blocks_per_blkz) * (SM_I(sbi)->grid_cnt))
 
 static inline unsigned int virt_to_logical_from_block0(struct f2fs_sb_info *sbi, block_t viraddr, unsigned int secno) {
+	// 加上main area的起始block地址，是因为section的分配是从main area开始的
+	// 这样可以得到相对于设备起始地址的块偏移
   block_t sec_start_blkaddr = MAIN_BLKADDR(sbi) + 
-    secno * SEC_SIZE_BLKS(sbi);
-  return sec_start_blkaddr + virt_to_logical_in_sec(sbi, viraddr);
+    secno * SEC_SIZE_BLKS(sbi); // section blk offset
+  return sec_start_blkaddr + virt_to_logical_in_sec(sbi, viraddr); // virt_to_logical_in_sec是section内的blk offset
 }
 
+// 得到某个segment在main area的起始block地址
 static inline unsigned int start_block_func(struct f2fs_sb_info *sbi, unsigned int segno) {
   block_t viraddr, blkaddr;
   unsigned int secno = GET_SEC_FROM_SEG(sbi, segno);
 
-  viraddr = SEG_TO_VIRADDR(sbi, segno);
+  viraddr = SEG_TO_VIRADDR(sbi, segno); // segment's block offset in section
   blkaddr = virt_to_logical_from_block0(sbi, viraddr, secno);
   return blkaddr;
 }
 
+// 获取当前segment的summary block地址（在整个设备内的地址）
 static inline unsigned int get_sum_block_addr(struct f2fs_sb_info *sbi,
   unsigned int segno) {
   block_t viraddr, blkaddr;
-  unsigned int secno = GET_SEC_FROM_SEG(sbi, segno);
+  unsigned int secno = GET_SEC_FROM_SEG(sbi, segno); // 当前segment所属的section number
   if (!SM_I(sbi))
     f2fs_bug_on(sbi, 1);
 
+  // 判断是否是section中的最后一个segment，如果是最后一个segment，它的block数量跟其他segment不一样
   if (IS_LAST_SEG(sbi, segno)) {
     unsigned int dev_idx = f2fs_get_first_zns_index(sbi);
     viraddr = FDEV(dev_idx).zone_capacity_blocks[0];
     viraddr *= SM_I(sbi)->grid_cnt;
-    viraddr -= 1;
+    viraddr -= 1; // 如果是最后一个segment，则segment summary block取最后一个block的地址
   } else {
+	// SEG_TO_VIRADDR(sbi, segno + 1)计算下一个segment在所在segment的起始block地址，减1即为当前segment的summary block地址
     viraddr = SEG_TO_VIRADDR(sbi, segno + 1) - 1;
   }
   blkaddr = virt_to_logical_from_block0(sbi, viraddr, secno);
@@ -1268,14 +1294,18 @@ static inline block_t logical_to_virt(struct f2fs_sb_info *sbi,
   block_t viraddr, blkaddr_from_seg0;
   unsigned int zone_offset_in_sec, subseg_offset_in_sec, blk_offset_in_sec;
 
-  blkaddr_from_seg0 = blkaddr - MAIN_BLKADDR(sbi);
-  zone_offset_in_sec = (blkaddr_from_seg0 / sbi->blocks_per_blkz) % SM_I(sbi)->grid_cnt;
-  subseg_offset_in_sec = (blkaddr_from_seg0 % sbi->blocks_per_blkz) / BLKS_PER_SUBSEG(sbi); 
-  blk_offset_in_sec = blkaddr_from_seg0 % BLKS_PER_SUBSEG(sbi);
+	// pr_info("F2FS-ZONE: blocks_per_seg=%u grid_cnt=%u -> BLKS_PER_SUBSEG=%u===tttttt[logical_to_virt()]\n",
+	// 		sbi->blocks_per_seg, SM_I(sbi)->grid_cnt,
+	// 		BLKS_PER_SUBSEG(sbi));
+			
+  blkaddr_from_seg0 = blkaddr - MAIN_BLKADDR(sbi); // 相对main的blk addr
+  zone_offset_in_sec = (blkaddr_from_seg0 / sbi->blocks_per_blkz) % SM_I(sbi)->grid_cnt; // 3
+  subseg_offset_in_sec = (blkaddr_from_seg0 % sbi->blocks_per_blkz) / BLKS_PER_SUBSEG(sbi); // 0 zone内segno
+  blk_offset_in_sec = blkaddr_from_seg0 % BLKS_PER_SUBSEG(sbi); // 0 blk in one seg
 
   viraddr = blk_offset_in_sec
           + (subseg_offset_in_sec * sbi->blocks_per_seg)
-          + (zone_offset_in_sec * BLKS_PER_SUBSEG(sbi));
+          + (zone_offset_in_sec * BLKS_PER_SUBSEG(sbi)); // 3 * 512
   return viraddr;
 }
 

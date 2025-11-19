@@ -138,10 +138,14 @@ struct page *f2fs_get_meta_page_retry(struct f2fs_sb_info *sbi, pgoff_t index)
 retry:
 	page = __get_meta_page(sbi, index, true);
 	if (IS_ERR(page)) {
+		printk("(%s:%d) read meta page failed for index: %lu, err: %ld, count: %d [by tt]\n",
+			__func__, __LINE__, index, PTR_ERR(page), count);
 		if (PTR_ERR(page) == -EIO &&
 				++count <= DEFAULT_RETRY_IO_COUNT)
 			goto retry;
 		f2fs_stop_checkpoint(sbi, false);
+		printk("(%s:%d) read meta page failed too many times for index: %lu, stop checkpoint [by tt]\n",
+			__func__, __LINE__, index);
 	}
 	return page;
 }
@@ -167,6 +171,7 @@ static bool __is_bitmap_valid(struct f2fs_sb_info *sbi, block_t blkaddr,
 	se = get_seg_entry(sbi, segno);
 
 	exist = f2fs_test_bit(offset, se->cur_valid_map);
+	// exist = 0 
 	if (!exist && type == DATA_GENERIC_ENHANCE) {
 		f2fs_err(sbi, "Inconsistent error blkaddr:%u, sit bitmap:%d",
 			 blkaddr, exist);
@@ -187,9 +192,12 @@ bool f2fs_is_valid_blkaddr(struct f2fs_sb_info *sbi,
 			return false;
 		break;
 	case META_SSA:
-		if (unlikely(blkaddr >= MAIN_BLKADDR(sbi) ||
-			blkaddr < SM_I(sbi)->ssa_blkaddr))
+		if (unlikely(blkaddr < SEG0_BLKADDR(sbi) || 
+			blkaddr < MAIN_BLKADDR(sbi)))
 			return false;
+		// if (unlikely(blkaddr >= MAIN_BLKADDR(sbi) ||
+		// 	blkaddr < SM_I(sbi)->ssa_blkaddr))
+		// 	return false;
 		break;
 	case META_CP:
 		if (unlikely(blkaddr >= SIT_I(sbi)->sit_base_addr ||
@@ -216,9 +224,11 @@ bool f2fs_is_valid_blkaddr(struct f2fs_sb_info *sbi,
 		}
 		break;
 	case META_GENERIC:
-		if (unlikely(blkaddr < SEG0_BLKADDR(sbi) ||
-			blkaddr >= MAIN_BLKADDR(sbi)))
+		if (unlikely(blkaddr < SEG0_BLKADDR(sbi)))
 			return false;
+		// if (unlikely(blkaddr < SEG0_BLKADDR(sbi) ||
+		// 	blkaddr >= MAIN_BLKADDR(sbi)))
+		// 	return false;
 		break;
 	default:
 		BUG();
@@ -1125,6 +1135,7 @@ int f2fs_get_valid_checkpoint(struct f2fs_sb_info *sbi)
 		goto fail_no_cp;
 	}
 
+	// checkpoint header
 	cp_block = (struct f2fs_checkpoint *)page_address(cur_page);
 	memcpy(sbi->ckpt, cp_block, blk_size);
 
@@ -1146,6 +1157,7 @@ int f2fs_get_valid_checkpoint(struct f2fs_sb_info *sbi)
 	if (cur_page == cp2)
 		cp_blk_no += 1 << le32_to_cpu(fsb->log_blocks_per_seg);
 
+	// checkpoint payload
 	for (i = 1; i < cp_blks; i++) {
 		void *sit_bitmap_ptr;
 		unsigned char *ckpt = (unsigned char *)sbi->ckpt;
@@ -1155,6 +1167,8 @@ int f2fs_get_valid_checkpoint(struct f2fs_sb_info *sbi)
 			err = PTR_ERR(cur_page);
 			goto free_fail_no_cp;
 		}
+		// sit_bitmap_ptr是一个泛用指针，不仅仅用于 SIT bitmap
+		// 实际上包含一系列元数据区：NAT/SIT journal、segment summary、SIT bitmap 等
 		sit_bitmap_ptr = page_address(cur_page);
 		memcpy(ckpt + i * blk_size, sit_bitmap_ptr, blk_size);
 		f2fs_put_page(cur_page, 1);
@@ -2076,7 +2090,7 @@ int f2fs_write_checkpoint(struct f2fs_sb_info *sbi, struct cp_control *cpc)
 	
 	if (f2fs_blkz_is_seq(sbi, 0, cp_blkaddr)){
 		zbd = &FDEV(0);
-		zone_sectors = SECTOR_FROM_BLOCK(sbi->blocks_per_blkz); 
+		zone_sectors = SECTOR_FROM_BLOCK(sbi->blocks_per_blkz);
 		if(!zbd || !zbd->bdev){
 			f2fs_bug_on(sbi, 1);
 			printk("(%s : %d) error here", __func__, __LINE__);
@@ -2168,9 +2182,10 @@ int f2fs_write_checkpoint(struct f2fs_sb_info *sbi, struct cp_control *cpc)
 	}
 
 	if (cpc->merge & 0x1) {
-		//printk("(%s : %d) invoke merge for sit", __func__, __LINE__);
+		printk("(%s : %d) invoke merge for sit", __func__, __LINE__);
 		cpc->merge = cpc->merge ;
     memcpy(SIT_I(sbi)->sit_merge_bitmap, SIT_I(sbi)->sit_log_bitmap, f2fs_bitmap_size(MAIN_SEGS(sbi)));
+	memset(SIT_I(sbi)->sit_log_bitmap, 0, f2fs_bitmap_size(MAIN_SEGS(sbi)));
 		set_ckpt_flags(sbi, CP_SIT_MERGE_FLAG);
 		down_write(&SM_I(sbi)->sit_ltree_slock);
 		SM_I(sbi)->sit_ltree_idx ^= 0x1;
@@ -2465,13 +2480,13 @@ int f2fs_merge(void *data)
 			clear_ckpt_flags(sbi, CP_SSA_MERGE_FLAG);
 
 			// do ssa merge
-//			printk("(%s : %d) merge ssa", __func__, __LINE__);
+			printk("(%s : %d) merge ssa", __func__, __LINE__);
 			down_write(&SM_I(sbi)->ssa_ltree_slock);
 			ret = merge_ssa(sbi, 0); 
 			up_write(&SM_I(sbi)->ssa_ltree_slock);
 			if (!ret) {
-				//printk("(%s : %d) merge ssa success"
-				//		, __func__, __LINE__);
+				printk("(%s : %d) merge ssa success"
+						, __func__, __LINE__);
 				set_ckpt_flags(sbi, CP_SSA_MERGE_DONE_FLAG);
 				clear_ckpt_flags(sbi, CP_SSA_IN_MERGE_FLAG);
 			} else {
@@ -2490,7 +2505,7 @@ int f2fs_merge(void *data)
 			set_ckpt_flags(sbi, CP_NAT_IN_MERGE_FLAG); 
 			clear_ckpt_flags(sbi, CP_NAT_MERGE_FLAG);
 
-//			printk("(%s : %d) merge nat", __func__, __LINE__);
+			printk("(%s : %d) merge nat", __func__, __LINE__);
 			down_read(&NM_I(sbi)->nat_ltree_slock);
 			ret = merge_nat(sbi, 0); 
 			up_read(&NM_I(sbi)->nat_ltree_slock);
@@ -2513,7 +2528,7 @@ int f2fs_merge(void *data)
 			set_ckpt_flags(sbi, CP_SIT_IN_MERGE_FLAG); 
 			clear_ckpt_flags(sbi, CP_SIT_MERGE_FLAG);
 
-//			printk("(%s : %d) merge sit", __func__, __LINE__);
+			printk("(%s : %d) merge sit", __func__, __LINE__);
 			down_read(&SM_I(sbi)->sit_ltree_slock);
 			ret = merge_sit(sbi, 0); 
 			up_read(&SM_I(sbi)->sit_ltree_slock);
@@ -2534,7 +2549,7 @@ int f2fs_merge(void *data)
 		if (done) {
 			f2fs_submit_merged_write(sbi, META);
       f2fs_wait_on_all_pages(sbi, F2FS_MERGE_META);
-	//		printk("(%s : %d) merge wait done", __func__, __LINE__);
+			printk("(%s : %d) merge wait done", __func__, __LINE__);
     }
 		msleep(time_ms);
 	}
@@ -2582,11 +2597,12 @@ void f2fs_init_ckpt_req_control(struct f2fs_sb_info *sbi)
 /*
  * lookup get current meta area log 
  */
+// 三个log当前要写入的addr都是根据 log_base_addr + log_zone * zone_size + off_in_zone计算
 inline pgoff_t next_log_addr(struct f2fs_sb_info *sbi, int log_type){
 	
 	pgoff_t log_addr;
 	int off_in_zone = 0;
-	int stripe_idx = 0;
+	int stripe_idx = 0; // 如果取消stripe，则stripe_idx应该为0
 	int stripe_cnt = 1;
 #if META_LOG_STRIPE
   stripe_cnt = META_STRIPE_CNT;
@@ -2596,14 +2612,16 @@ inline pgoff_t next_log_addr(struct f2fs_sb_info *sbi, int log_type){
 		off_in_zone = SM_I(sbi)->sit_blks_in_log / stripe_cnt;
 		stripe_idx = SM_I(sbi)->sit_blks_in_log % stripe_cnt;
 #else 
+		// off_in_zone: number of sit entries written in current log zone
 		off_in_zone = SM_I(sbi)->sit_blks_in_log;
 #endif
+		// 如果stripe_idx为0，log_addr为log接下来要写入的地址
 		log_addr = SM_I(sbi)->sit_log_blkaddr + stripe_idx * sbi->blocks_per_blkz;
 		log_addr += off_in_zone;
 //		log_addr = SM_I(sbi)->sit_log_blkaddr + SM_I(sbi)->sit_blks_in_log;
-		SM_I(sbi)->sit_blks_in_log++;
+		SM_I(sbi)->sit_blks_in_log++; // 移动current log zone的wp
 #if DELAYED_MERGE
-		log_addr = log_addr + SM_I(sbi)->cur_sit_log * sbi->blocks_per_blkz;
+		log_addr = log_addr + SM_I(sbi)->cur_sit_log * sbi->blocks_per_blkz; // 加目前已经写入的log zone数
 #endif
 	} else if (log_type == NAT_LOG) {
 #if 0//META_LOG_STRIPE
@@ -2624,6 +2642,7 @@ inline pgoff_t next_log_addr(struct f2fs_sb_info *sbi, int log_type){
 		log_addr = log_addr + NM_I(sbi)->cur_nat_log * sbi->blocks_per_blkz;
 #endif		
 	} else if (log_type == SSA_LOG) {
+		// 这里要求stripe_cnt【META_STRIPE_CNT】不能为0
 		off_in_zone = SM_I(sbi)->sum_blks_in_log / stripe_cnt;
 		stripe_idx = SM_I(sbi)->sum_blks_in_log % stripe_cnt;
 
@@ -2649,6 +2668,7 @@ struct page *get_next_log_page(struct f2fs_sb_info *sbi, int log_type){
 		return NULL;
 	}
 
+	// 获取下一个要写入的log地址
 	off = next_log_addr(sbi, log_type);
 	
 	if (log_type == SIT_LOG){
@@ -2674,6 +2694,7 @@ struct page *get_next_log_page(struct f2fs_sb_info *sbi, int log_type){
 		return NULL;
 	}
 
+	// 加载到page cache
 	page = f2fs_grab_meta_page(sbi, off);
 	set_page_dirty(page);
 	//printk("(%s:%d) page index : %lu, page dirty : %d", 
@@ -2827,7 +2848,7 @@ int reset_meta_zone_towrite(struct f2fs_sb_info *sbi,
 	switch(type){
 		case SIT_LOG:
 			base = SM_I(sbi)->sit_log_blkaddr;
-			log = 1;
+			log = 1; // 是否为log
 			break;
 		case NAT_LOG:
 			base = NM_I(sbi)->nat_log_blkaddr;
@@ -2840,7 +2861,7 @@ int reset_meta_zone_towrite(struct f2fs_sb_info *sbi,
 		case SIT:
 			base = SIT_I(sbi)->sit_base_addr;
 			bitmap = SIT_I(sbi)->sit_bitmap;
-			offset = meta_zoff_to_boff(sbi, zone_off);
+			offset = meta_zoff_to_boff(sbi, zone_off); // offset = zoff * meta_blks_zone_cap(sbi); 
 			break;
 		case NAT:
 			base = NM_I(sbi)->nat_blkaddr;
@@ -2883,15 +2904,19 @@ int reset_meta_zone_towrite(struct f2fs_sb_info *sbi,
 #if META_LOG_STRIPE
   if (type == SSA_LOG) {
     for (i=0;i<META_STRIPE_CNT;i++){
+	  pr_info("[reset_meta_zone_towrite 2897]: base: %u, offset: %u, start block %x->%u, blklen: %u (SSA_LOG)\n", base, offset, blkstart, blkstart, blklen);
+	  printk("(%s:%d) issue discard zone start block %x (SSA_LOG)", __func__, __LINE__, blkstart);
+      printk("(%s:%d) base: %u, offset: %u, start block %x->%u, blklen: %u (SSA_LOG)", __func__, __LINE__, base, offset, blkstart, blkstart, blklen);
       ret = f2fs_issue_discard_zone(sbi, bdev, blkstart, blklen);
-      //printk("(%s:%d) issue discard zone start block %x", __func__, __LINE__, blkstart);
       blkstart += blklen;
       if (ret)
         return ret;
     }
   } else {
+	pr_info("[reset_meta_zone_towrite 2906]: base: %u, offset: %u, start block %x->%u, blklen: %u (not SSA_LOG)\n", base, offset, blkstart, blkstart, blklen);
+	printk("(%s:%d) issue discard zone start block %x (not SSA_LOG, type: %d)", __func__, __LINE__, blkstart, type);
+    printk("(%s:%d) base: %u, offset: %u, start block %x->%u, blklen: %u (not SSA_LOG, type: %d)", __func__, __LINE__, base, offset, blkstart, blkstart, blklen, type);
     ret = f2fs_issue_discard_zone(sbi, bdev, blkstart, blklen);
-    //printk("(%s:%d) issue discard zone start block %x", __func__, __LINE__, blkstart);
   }
 #else
   ret = f2fs_issue_discard_zone(sbi, bdev, blkstart, blklen);
